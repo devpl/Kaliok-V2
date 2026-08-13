@@ -14,3 +14,8 @@ class Kaliok:
     def stop(self):
         self.running = False
         return f"{self.name} est arrêté."
+
+    def status(self):
+        if self.running:
+            return f"{self.name} est en cours d'exécution."
+        return f"{self.name} est arrêté."
