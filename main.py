@@ -1,5 +1,9 @@
+from src.kaliok.core import Kaliok
+
+
 def main():
-    print("Kaliok V2 démarre 🚀")
+    kaliok = Kaliok()
+    print(kaliok.start())
 
 
 if __name__ == "__main__":
