@@ -1,4 +1,4 @@
-from src.kaliok.core import Kaliok
+from kaliok.core import Kaliok
 
 
 def main():

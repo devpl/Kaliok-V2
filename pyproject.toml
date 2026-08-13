@@ -1,5 +1,9 @@
 [project]
 name = "kaliok-v2"
 version = "0.1.0"
-description = "Kaliok V2"
+description = "kaliok V2"
 requires-python = ">=3.13"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
