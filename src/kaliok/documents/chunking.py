@@ -9,6 +9,7 @@ class DocumentChunk:
     text: str
     page: int
     index: int
+    source_block_index: int
 
 
 def split_sentences(text: str) -> list[str]:
@@ -24,7 +25,9 @@ def chunk_document(
     chunks: list[DocumentChunk] = []
     chunk_index = 0
 
-    for block in document.blocks:
+    for source_block_index, block in enumerate(
+        document.blocks
+    ):
         sentences = split_sentences(block.text)
 
         current_chunk: list[str] = []
@@ -33,12 +36,19 @@ def chunk_document(
         for sentence in sentences:
             sentence_length = len(sentence)
 
-            if current_chunk and current_length + 1 + sentence_length > max_chars:
+            if (
+                current_chunk
+                and current_length
+                + 1
+                + sentence_length
+                > max_chars
+            ):
                 chunks.append(
                     DocumentChunk(
                         text=" ".join(current_chunk),
                         page=block.page,
                         index=chunk_index,
+                        source_block_index=source_block_index,
                     )
                 )
 
@@ -47,12 +57,16 @@ def chunk_document(
                 current_length = 0
 
             if sentence_length > max_chars:
-                for part in split_long_text(sentence, max_chars):
+                for part in split_long_text(
+                    sentence,
+                    max_chars,
+                ):
                     chunks.append(
                         DocumentChunk(
                             text=part,
                             page=block.page,
                             index=chunk_index,
+                            source_block_index=source_block_index,
                         )
                     )
                     chunk_index += 1
@@ -72,31 +86,45 @@ def chunk_document(
                     text=" ".join(current_chunk),
                     page=block.page,
                     index=chunk_index,
+                    source_block_index=source_block_index,
                 )
             )
 
             chunk_index += 1
 
-    return apply_overlap(chunks, overlap_chars)
+    return apply_overlap(
+        chunks,
+        overlap_chars,
+    )
 
 
-def split_long_text(text: str, max_chars: int) -> list[str]:
+def split_long_text(
+    text: str,
+    max_chars: int,
+) -> list[str]:
     parts: list[str] = []
     remaining = text.strip()
 
     while len(remaining) > max_chars:
-        cut = remaining.rfind(" ", 0, max_chars + 1)
+        cut = remaining.rfind(
+            " ",
+            0,
+            max_chars + 1,
+        )
 
         if cut <= 0:
             cut = max_chars
 
-        parts.append(remaining[:cut].strip())
+        parts.append(
+            remaining[:cut].strip()
+        )
         remaining = remaining[cut:].strip()
 
     if remaining:
         parts.append(remaining)
 
     return parts
+
 
 def apply_overlap(
     chunks: list[DocumentChunk],
@@ -112,8 +140,18 @@ def apply_overlap(
             overlapped.append(chunk)
             continue
 
-        previous_text = chunks[index - 1].text
-        overlap = previous_text[-overlap_chars:].strip()
+        previous = chunks[index - 1]
+
+        if (
+            previous.source_block_index
+            != chunk.source_block_index
+        ):
+            overlapped.append(chunk)
+            continue
+
+        overlap = previous.text[
+            -overlap_chars:
+        ].strip()
 
         text = chunk.text
 
@@ -125,8 +163,10 @@ def apply_overlap(
                 text=text,
                 page=chunk.page,
                 index=chunk.index,
+                source_block_index=(
+                    chunk.source_block_index
+                ),
             )
         )
 
     return overlapped
-

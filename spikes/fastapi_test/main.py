@@ -1,34 +1,15 @@
-import os
-from pathlib import Path
-
-import psycopg
-from dotenv import load_dotenv
 from fastapi import FastAPI
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlalchemy import text
 
-ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
-load_dotenv(ENV_FILE)
+from kaliok.storage.database import create_database_engine
 
-DATABASE_URL = (
-    f"postgresql+psycopg://"
-    f"{os.environ['KALIOK_DB_USER']}:"
-    f"{os.environ['KALIOK_DB_PASSWORD']}@"
-    f"{os.environ['KALIOK_DB_HOST']}:"
-    f"{os.environ['KALIOK_DB_PORT']}/"
-    f"{os.environ['KALIOK_DB_NAME']}"
+
+app = FastAPI(
+    title="kaliok V2",
+    version="0.1.0",
 )
 
-engine = create_engine(DATABASE_URL)
-
-
-class DocumentTest(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    title: str
-
-
-SQLModel.metadata.create_all(engine)
-
-app = FastAPI()
+engine = create_database_engine()
 
 
 @app.get("/")
@@ -43,41 +24,28 @@ def health():
 
 @app.get("/db-health")
 def db_health():
-    with psycopg.connect(
-        host=os.environ["KALIOK_DB_HOST"],
-        port=os.environ["KALIOK_DB_PORT"],
-        dbname=os.environ["KALIOK_DB_NAME"],
-        user=os.environ["KALIOK_DB_USER"],
-        password=os.environ["KALIOK_DB_PASSWORD"],
-    ) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT current_database(), current_user, extversion
-                FROM pg_extension
-                WHERE extname = 'vector'
-                """
-            )
-            database, user, vector_version = cursor.fetchone()
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
 
-    return {
-        "status": "ok",
-        "database": database,
-        "user": user,
-        "pgvector": vector_version,
-    }
+        return {
+            "status": "ok",
+            "database": "connected",
+        }
 
+    except Exception as exc:
+        return {
+            "status": "error",
+            "database": "unavailable",
+            "detail": str(exc),
+        }
 
-@app.post("/documents")
-def create_document(document: DocumentTest):
-    with Session(engine) as session:
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        return document
+if __name__ == "__main__":
+    import uvicorn
 
-
-@app.get("/documents")
-def list_documents():
-    with Session(engine) as session:
-        return session.exec(select(DocumentTest)).all()
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8010,
+        reload=True,
+    )

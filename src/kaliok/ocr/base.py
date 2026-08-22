@@ -8,6 +8,13 @@ class OcrResult:
     text: str
     confidence: float | None = None
 
+    bbox_x: float | None = None
+    bbox_y: float | None = None
+    bbox_width: float | None = None
+    bbox_height: float | None = None
+
+    coordinate_system: str | None = None
+
 
 class OcrEngine(ABC):
 
