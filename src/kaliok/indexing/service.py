@@ -876,6 +876,18 @@ def _link_existing_chunks_to_blocks(
                 f"le chunk {chunk.index}."
             )
 
+        existing_links = session.exec(
+            select(ChunkContentBlock).where(
+                ChunkContentBlock.chunk_id
+                == stored_chunk.id
+            )
+        ).all()
+
+        for existing_link in existing_links:
+            session.delete(existing_link)
+
+        session.flush()
+
         session.add(
             ChunkContentBlock(
                 chunk_id=stored_chunk.id,
