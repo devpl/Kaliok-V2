@@ -6,6 +6,10 @@ import unicodedata
 from kaliok.documents.models import TextBlock
 
 
+MIN_CONTAINED_OCR_TOKENS = 3
+MIN_CONTAINED_OCR_CHARACTERS = 12
+
+
 def normalize_text_for_dedup(
     text: str,
 ) -> str:
@@ -27,6 +31,18 @@ def normalize_text_for_dedup(
     )
 
     return normalized.strip()
+
+
+def _is_informative_contained_text(
+    normalized_ocr: str,
+) -> bool:
+    tokens = normalized_ocr.split()
+
+    return (
+        len(tokens) >= MIN_CONTAINED_OCR_TOKENS
+        and len(normalized_ocr)
+        >= MIN_CONTAINED_OCR_CHARACTERS
+    )
 
 
 def deduplicate_ocr_against_native(
@@ -55,9 +71,21 @@ def deduplicate_ocr_against_native(
             block.text
         )
 
+        if not normalized:
+            deduplicated.append(block)
+            continue
+
+        if normalized in native_texts:
+            continue
+
         if (
-            normalized
-            and normalized in native_texts
+            _is_informative_contained_text(
+                normalized
+            )
+            and any(
+                normalized in native_text
+                for native_text in native_texts
+            )
         ):
             continue
 
