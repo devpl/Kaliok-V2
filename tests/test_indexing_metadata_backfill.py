@@ -13,7 +13,10 @@ from kaliok.documents.models import (
 from kaliok.indexing import service
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
+    ChunkContentBlock,
+    ChunkEmbedding,
     ContentBlock,
+    DocumentChunk,
     DocumentVersion,
     Page,
     ProcessingRun,
@@ -104,6 +107,11 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                     source,
                     pdf_path,
                 )
+                embedding_model = (
+                    service.get_or_create_embedding_model(
+                        session
+                    )
+                )
                 version = DocumentVersion(
                     document_id=document.id,
                     version_number=1,
@@ -134,6 +142,8 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                 session.add(historical_run)
                 session.flush()
 
+                first_historical_block = None
+
                 for page_number in (1, 2):
                     page = Page(
                         document_version_id=version.id,
@@ -149,20 +159,58 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                     session.add(page)
                     session.flush()
 
-                    session.add(
-                        ContentBlock(
-                            page_id=page.id,
-                            processing_run_id=historical_run.id,
-                            block_index=page_number - 1,
-                            reading_order=0,
-                            block_type="text",
-                            content=(
-                                f"Contenu historique page {page_number}"
-                            ),
-                            extraction_method="native",
-                            extraction_engine="pdfium",
-                        )
+                    historical_block = ContentBlock(
+                        page_id=page.id,
+                        processing_run_id=historical_run.id,
+                        block_index=page_number - 1,
+                        reading_order=0,
+                        block_type="text",
+                        content=(
+                            f"Contenu historique page {page_number}"
+                        ),
+                        extraction_method="native",
+                        extraction_engine="pdfium",
                     )
+                    session.add(historical_block)
+                    session.flush()
+
+                    if first_historical_block is None:
+                        first_historical_block = historical_block
+
+                assert first_historical_block is not None
+
+                chunk = DocumentChunk(
+                    document_version_id=version.id,
+                    chunk_index=0,
+                    content="Contenu historique indexé",
+                    char_count=26,
+                    page_start=1,
+                    page_end=1,
+                    chunking_strategy=service.CHUNKING_STRATEGY,
+                    chunking_version=service.CHUNKING_VERSION,
+                )
+                session.add(chunk)
+                session.flush()
+
+                session.add(
+                    ChunkEmbedding(
+                        chunk_id=chunk.id,
+                        embedding_model_id=embedding_model.id,
+                        embedding=(
+                            [0.0]
+                            * service.EMBEDDING_DIMENSIONS
+                        ),
+                    )
+                )
+                session.add(
+                    ChunkContentBlock(
+                        chunk_id=chunk.id,
+                        content_block_id=(
+                            first_historical_block.id
+                        ),
+                        block_order=0,
+                    )
+                )
 
                 session.commit()
                 version_id = version.id

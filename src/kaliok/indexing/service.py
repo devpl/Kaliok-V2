@@ -322,6 +322,103 @@ def get_perception_storage_state(
     return "complete"
 
 
+def get_index_storage_state(
+    session: Session,
+    version: DocumentVersion,
+    embedding_model: EmbeddingModel,
+) -> str:
+    chunks = session.exec(
+        select(DocumentChunk).where(
+            DocumentChunk.document_version_id
+            == version.id
+        )
+    ).all()
+
+    if not chunks:
+        return "chunks_missing"
+
+    chunk_indices = sorted(
+        chunk.chunk_index
+        for chunk in chunks
+    )
+
+    if chunk_indices != list(range(len(chunks))):
+        return "chunks_incomplete"
+
+    chunk_ids = {
+        chunk.id
+        for chunk in chunks
+    }
+
+    embeddings = session.exec(
+        select(ChunkEmbedding).where(
+            ChunkEmbedding.chunk_id.in_(chunk_ids),
+            ChunkEmbedding.embedding_model_id
+            == embedding_model.id,
+        )
+    ).all()
+
+    embedded_chunk_ids = {
+        embedding.chunk_id
+        for embedding in embeddings
+    }
+
+    if embedded_chunk_ids != chunk_ids:
+        return "embeddings_incomplete"
+
+    links = session.exec(
+        select(ChunkContentBlock).where(
+            ChunkContentBlock.chunk_id.in_(
+                chunk_ids
+            )
+        )
+    ).all()
+
+    linked_chunk_ids = {
+        link.chunk_id
+        for link in links
+    }
+
+    if linked_chunk_ids != chunk_ids:
+        return "content_block_links_incomplete"
+
+    return "complete"
+
+
+def _validated_index_chunk_count(
+    session: Session,
+    version: DocumentVersion,
+    embedding_model: EmbeddingModel,
+) -> int:
+    perception_state = get_perception_storage_state(
+        session,
+        version,
+    )
+
+    if perception_state != "complete":
+        raise RuntimeError(
+            "Perception incomplète : "
+            f"{perception_state}."
+        )
+
+    index_state = get_index_storage_state(
+        session,
+        version,
+        embedding_model,
+    )
+
+    if index_state != "complete":
+        raise RuntimeError(
+            "Index incomplet : "
+            f"{index_state}."
+        )
+
+    return count_chunks(
+        session,
+        version.id,
+    )
+
+
 def print_duration(
     label: str,
     duration: float,
@@ -842,11 +939,6 @@ def index_document(
         )
 
         if existing_version is not None:
-            chunk_count = count_chunks(
-                session,
-                existing_version.id,
-            )
-
             perception_state = (
                 get_perception_storage_state(
                     session,
@@ -855,6 +947,13 @@ def index_document(
             )
 
             if perception_state == "complete":
+                chunk_count = (
+                    _validated_index_chunk_count(
+                        session,
+                        existing_version,
+                        embedding_model,
+                    )
+                )
                 session.commit()
 
                 if verbose:
@@ -988,9 +1087,12 @@ def index_document(
             )
 
             if current_state == "complete":
-                chunk_count = count_chunks(
-                    session,
-                    existing_version.id,
+                chunk_count = (
+                    _validated_index_chunk_count(
+                        session,
+                        existing_version,
+                        embedding_model,
+                    )
                 )
                 session.rollback()
 
@@ -1199,9 +1301,12 @@ def index_document(
             )
 
             if current_state == "complete":
-                chunk_count = count_chunks(
-                    session,
-                    existing_version.id,
+                chunk_count = (
+                    _validated_index_chunk_count(
+                        session,
+                        existing_version,
+                        embedding_model,
+                    )
                 )
                 session.rollback()
 
@@ -1320,9 +1425,12 @@ def index_document(
             )
 
             if current_state == "complete":
-                chunk_count = count_chunks(
-                    session,
-                    existing_version.id,
+                chunk_count = (
+                    _validated_index_chunk_count(
+                        session,
+                        existing_version,
+                        embedding_model,
+                    )
                 )
 
                 session.rollback()
@@ -1397,9 +1505,12 @@ def index_document(
 
         else:
             if existing_version is not None:
-                chunk_count = count_chunks(
-                    session,
-                    existing_version.id,
+                chunk_count = (
+                    _validated_index_chunk_count(
+                        session,
+                        existing_version,
+                        embedding_model,
+                    )
                 )
 
                 session.rollback()
