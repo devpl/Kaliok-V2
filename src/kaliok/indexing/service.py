@@ -455,58 +455,13 @@ def _enrich_existing_page_metadata(
     version: DocumentVersion,
     document_content,
 ) -> ProcessingRun:
-    page_info = _page_info_by_number(
-        document_content
+    processing_run, _ = (
+        _store_new_perception_on_existing_pages(
+            session,
+            version,
+            document_content,
+        )
     )
-
-    stored_pages = session.exec(
-        select(Page).where(
-            Page.document_version_id
-            == version.id
-        )
-    ).all()
-
-    if len(stored_pages) != document_content.page_count:
-        raise RuntimeError(
-            "Enrichissement impossible : "
-            "le nombre de pages stockées ne "
-            "correspond pas au document."
-        )
-
-    processing_run = ProcessingRun(
-        document_version_id=version.id,
-        process_type=PROCESS_TYPE,
-        status="completed",
-        engine=PERCEPTION_ENGINE,
-        engine_version=PERCEPTION_VERSION,
-        completed_at=utc_now(),
-    )
-
-    session.add(processing_run)
-    session.flush()
-
-    for stored_page in stored_pages:
-        document_page = page_info.get(
-            stored_page.page_number
-        )
-
-        if document_page is None:
-            raise RuntimeError(
-                "Enrichissement impossible : "
-                f"page {stored_page.page_number} "
-                "absente du reader."
-            )
-
-        _apply_document_page_to_storage(
-            stored_page,
-            document_page,
-            processing_run.id,
-        )
-        stored_page.perception_processing_run_id = (
-            processing_run.id
-        )
-
-        session.add(stored_page)
 
     return processing_run
 
