@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from kaliok.documents.chunking import DocumentChunk as PerceivedChunk
 from kaliok.documents.models import (
     DocumentContent,
     DocumentPage,
@@ -97,6 +98,23 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
             service,
             "read_document",
             lambda path: document_content,
+        )
+        monkeypatch.setattr(
+            service,
+            "clean_document",
+            lambda document: document,
+        )
+        monkeypatch.setattr(
+            service,
+            "chunk_document_semantically",
+            lambda document, **kwargs: [
+                PerceivedChunk(
+                    text="Contenu historique indexé",
+                    page=1,
+                    index=0,
+                    source_block_index=0,
+                )
+            ],
         )
 
         try:
@@ -215,6 +233,8 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                 session.commit()
                 version_id = version.id
                 historical_run_id = historical_run.id
+                historical_block_id = first_historical_block.id
+                chunk_id = chunk.id
 
             first_result = service.index_document(
                 pdf_path,
@@ -261,9 +281,73 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                     == "complete"
                 )
 
+                links = session.exec(
+                    select(ChunkContentBlock).where(
+                        ChunkContentBlock.chunk_id == chunk_id
+                    )
+                ).all()
+
+                assert links
+
+                linked_blocks = [
+                    session.get(
+                        ContentBlock,
+                        link.content_block_id,
+                    )
+                    for link in links
+                ]
+
+                assert all(
+                    block is not None
+                    for block in linked_blocks
+                )
+                assert all(
+                    block.processing_run_id
+                    == session.get(
+                        Page,
+                        block.page_id,
+                    ).perception_processing_run_id
+                    for block in linked_blocks
+                    if block is not None
+                )
+                assert all(
+                    link.content_block_id
+                    != historical_block_id
+                    for link in links
+                )
+
+                embedding_model = (
+                    service.get_or_create_embedding_model(
+                        session
+                    )
+                )
+                assert (
+                    service.get_index_storage_state(
+                        session,
+                        version,
+                        embedding_model,
+                    )
+                    == "complete"
+                )
+
                 run_count_after_first_call = session.exec(
                     select(func.count(ProcessingRun.id)).where(
                         ProcessingRun.document_version_id == version_id,
+                    )
+                ).one()
+                block_count_after_first_call = session.exec(
+                    select(func.count(ContentBlock.id)).where(
+                        ContentBlock.page_id.in_(
+                            {
+                                page.id
+                                for page in pages
+                            }
+                        )
+                    )
+                ).one()
+                link_count_after_first_call = session.exec(
+                    select(func.count(ChunkContentBlock.chunk_id)).where(
+                        ChunkContentBlock.chunk_id == chunk_id
                     )
                 ).one()
 
@@ -286,10 +370,36 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                         ProcessingRun.document_version_id == version_id,
                     )
                 ).one()
+                page_ids = {
+                    page.id
+                    for page in session.exec(
+                        select(Page).where(
+                            Page.document_version_id == version_id
+                        )
+                    ).all()
+                }
+                block_count_after_second_call = session.exec(
+                    select(func.count(ContentBlock.id)).where(
+                        ContentBlock.page_id.in_(page_ids)
+                    )
+                ).one()
+                link_count_after_second_call = session.exec(
+                    select(func.count(ChunkContentBlock.chunk_id)).where(
+                        ChunkContentBlock.chunk_id == chunk_id
+                    )
+                ).one()
 
                 assert (
                     run_count_after_second_call
                     == run_count_after_first_call
+                )
+                assert (
+                    block_count_after_second_call
+                    == block_count_after_first_call
+                )
+                assert (
+                    link_count_after_second_call
+                    == link_count_after_first_call
                 )
         finally:
             transaction.rollback()

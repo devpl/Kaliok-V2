@@ -366,6 +366,33 @@ def get_index_storage_state(
     if embedded_chunk_ids != chunk_ids:
         return "embeddings_incomplete"
 
+    pages = session.exec(
+        select(Page).where(
+            Page.document_version_id
+            == version.id
+        )
+    ).all()
+
+    current_run_by_page_id = {
+        page.id: page.perception_processing_run_id
+        for page in pages
+    }
+
+    blocks = session.exec(
+        select(ContentBlock).where(
+            ContentBlock.page_id.in_(
+                current_run_by_page_id
+            )
+        )
+    ).all()
+
+    current_block_ids = {
+        block.id
+        for block in blocks
+        if block.processing_run_id
+        == current_run_by_page_id.get(block.page_id)
+    }
+
     links = session.exec(
         select(ChunkContentBlock).where(
             ChunkContentBlock.chunk_id.in_(
@@ -377,6 +404,8 @@ def get_index_storage_state(
     linked_chunk_ids = {
         link.chunk_id
         for link in links
+        if link.content_block_id
+        in current_block_ids
     }
 
     if linked_chunk_ids != chunk_ids:
@@ -551,16 +580,15 @@ def _enrich_existing_page_metadata(
     session: Session,
     version: DocumentVersion,
     document_content,
-) -> ProcessingRun:
-    processing_run, _ = (
-        _store_new_perception_on_existing_pages(
-            session,
-            version,
-            document_content,
-        )
+) -> tuple[
+    ProcessingRun,
+    dict[int, ContentBlock],
+]:
+    return _store_new_perception_on_existing_pages(
+        session,
+        version,
+        document_content,
     )
-
-    return processing_run
 
 
 def _store_perception(
@@ -1058,6 +1086,22 @@ def index_document(
     if page_metadata_backfill:
         start = time.perf_counter()
 
+        cleaned_document = clean_document(
+            document_content
+        )
+
+        chunks = chunk_document_semantically(
+            cleaned_document,
+            breakpoint_percentile_threshold=95,
+            buffer_size=1,
+        )
+
+        if not chunks:
+            raise RuntimeError(
+                "Aucun chunk généré pour "
+                f"{path.name}."
+            )
+
         with Session(engine) as session:
             source = get_or_create_source(session)
 
@@ -1126,10 +1170,27 @@ def index_document(
                     "pendant l'enrichissement."
                 )
 
-            _enrich_existing_page_metadata(
+            stored_chunks_by_index = (
+                _get_existing_chunks_by_index(
+                    session,
+                    existing_version.id,
+                )
+            )
+
+            (
+                _,
+                stored_blocks_by_source_index,
+            ) = _enrich_existing_page_metadata(
                 session,
                 existing_version,
                 document_content,
+            )
+
+            _link_existing_chunks_to_blocks(
+                session,
+                chunks,
+                stored_chunks_by_index,
+                stored_blocks_by_source_index,
             )
 
             session.commit()
