@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
+import requests
 from sqlmodel import Session, select
 
 from kaliok.embeddings.ollama import (
+    OLLAMA_URL,
     embed_text,
 )
 from kaliok.embeddings.service import (
@@ -43,6 +47,7 @@ DATASET_PATH = (
 )
 
 RETRIEVAL_LIMIT = 10
+DEFAULT_JUDGE_TOP_K = 3
 
 STRATEGIES = (
     "vector",
@@ -56,7 +61,133 @@ class RetrievedChunk:
     chunk_id: UUID
     page_start: int | None
     page_end: int | None
+    content: str
     vector_distance: float | None = None
+
+
+@dataclass(frozen=True)
+class AnswerabilityDecision:
+    answerable: bool
+    evidence_chunk_indices: list[int]
+
+
+@dataclass
+class AnswerabilityObservation:
+    question_id: str
+    expected_answerable: bool
+    expected_pages: list[int]
+    decision: AnswerabilityDecision | None
+    chunks: list[RetrievedChunk]
+    evidence_correct: bool | None = None
+    protocol_error: str | None = None
+    raw_output: str | None = None
+    technical_error_type: str | None = None
+    technical_error_message: str | None = None
+
+
+class JudgeProtocolError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_output: str,
+    ) -> None:
+        super().__init__(message)
+        self.raw_output = raw_output
+
+
+@dataclass
+class AnswerabilityMetrics:
+    true_positive: int = 0
+    false_positive: int = 0
+    false_negative: int = 0
+    true_negative: int = 0
+    protocol_errors: int = 0
+    technical_errors: int = 0
+    answerability_correct: int = 0
+    evidence_correct: int = 0
+    answerability_and_evidence_correct: int = 0
+    evidence_false_positives: int = 0
+
+    def add(
+        self,
+        *,
+        expected: bool,
+        predicted: bool,
+        evidence_correct: bool | None = None,
+    ) -> None:
+        if expected and predicted:
+            self.true_positive += 1
+        elif not expected and predicted:
+            self.false_positive += 1
+        elif expected and not predicted:
+            self.false_negative += 1
+        else:
+            self.true_negative += 1
+
+        if expected == predicted:
+            self.answerability_correct += 1
+
+        if expected:
+            if predicted and evidence_correct:
+                self.evidence_correct += 1
+                self.answerability_and_evidence_correct += 1
+            elif predicted:
+                self.evidence_false_positives += 1
+        elif not predicted:
+            self.answerability_and_evidence_correct += 1
+
+    @property
+    def business_false_positives(self) -> int:
+        return self.false_positive
+
+    @property
+    def business_false_negatives(self) -> int:
+        return self.false_negative
+
+    @property
+    def total(self) -> int:
+        return (
+            self.true_positive
+            + self.false_positive
+            + self.false_negative
+            + self.true_negative
+        )
+
+    @property
+    def accuracy(self) -> float:
+        if not self.total:
+            return 0.0
+        return (
+            self.true_positive
+            + self.true_negative
+        ) / self.total
+
+    @property
+    def precision(self) -> float:
+        predicted_positive = (
+            self.true_positive
+            + self.false_positive
+        )
+        if not predicted_positive:
+            return 0.0
+        return (
+            self.true_positive
+            / predicted_positive
+        )
+
+    @property
+    def recall(self) -> float:
+        expected_positive = (
+            self.true_positive
+            + self.false_negative
+        )
+        if not expected_positive:
+            return 0.0
+        return (
+            self.true_positive
+            / expected_positive
+        )
 
 
 @dataclass
@@ -174,6 +305,7 @@ def load_chunk_pages(
             chunk_id=chunk.id,
             page_start=chunk.page_start,
             page_end=chunk.page_end,
+            content=chunk.content,
         )
         for chunk in chunks
     }
@@ -243,6 +375,9 @@ def attach_pages(
             page_end=page_mapping[
                 chunk_id
             ].page_end,
+            content=page_mapping[
+                chunk_id
+            ].content,
             vector_distance=(
                 vector_distances.get(
                     chunk_id
@@ -532,7 +667,521 @@ def format_rank(
     )
 
 
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Benchmark retrieval et expérience "
+            "Answerability Gate V1."
+        )
+    )
+    parser.add_argument(
+        "--answerability-gate",
+        action="store_true",
+        help=(
+            "Active le juge local sur les trois "
+            "meilleurs chunks vectoriels."
+        ),
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=os.getenv(
+            "KALIOK_ANSWERABILITY_MODEL"
+        ),
+        help=(
+            "Modèle génératif Ollama local. "
+            "Alternative : variable "
+            "KALIOK_ANSWERABILITY_MODEL."
+        ),
+    )
+    parser.add_argument(
+        "--judge-top-k",
+        type=positive_integer,
+        default=DEFAULT_JUDGE_TOP_K,
+        help=(
+            "Nombre de chunks vectoriels transmis "
+            "au juge (défaut : 3)."
+        ),
+    )
+    return parser.parse_args()
+
+
+def positive_integer(value: str) -> int:
+    parsed = int(value)
+
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(
+            "La valeur doit être strictement positive."
+        )
+
+    return parsed
+
+
+def judge_answerability(
+    question: str,
+    chunks: list[RetrievedChunk],
+    *,
+    model: str,
+) -> AnswerabilityDecision:
+    passages = "\n\n".join(
+        (
+            f"CHUNK {index}\n"
+            f"{chunk.content}"
+        )
+        for index, chunk in enumerate(chunks)
+    )
+
+    prompt = (
+        "Tu es un juge d'answerability documentaire.\n"
+        "Décide uniquement si les passages fournis contiennent "
+        "assez d'information explicite pour répondre précisément "
+        "à la question.\n"
+        "N'utilise aucune connaissance externe et ne génère jamais "
+        "la réponse finale.\n"
+        "Si l'information est absente, seulement suggérée, ou "
+        "insuffisante pour répondre précisément, answerable doit "
+        "être false.\n"
+        "evidence_chunk_indices contient uniquement les indices des "
+        "passages qui justifient la décision true; utilise une liste "
+        "vide lorsque answerable est false.\n\n"
+        f"QUESTION\n{question}\n\n"
+        f"PASSAGES\n{passages}"
+    )
+
+    response = requests.post(
+        f"{OLLAMA_URL}/api/generate",
+        json={
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": {
+                "type": "object",
+                "properties": {
+                    "answerable": {
+                        "type": "boolean",
+                    },
+                    "evidence_chunk_indices": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer",
+                        },
+                    },
+                },
+                "required": [
+                    "answerable",
+                    "evidence_chunk_indices",
+                ],
+                "additionalProperties": False,
+            },
+            "options": {
+                "temperature": 0,
+            },
+        },
+        timeout=300,
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+    raw_output = str(
+        payload.get("response", "")
+    )
+
+    try:
+        raw_decision = json.loads(
+            raw_output
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise JudgeProtocolError(
+            "Sortie juge invalide : JSON.",
+            raw_output=raw_output,
+        ) from error
+
+    if not isinstance(raw_decision, dict):
+        raise JudgeProtocolError(
+            "Sortie juge invalide : objet JSON attendu.",
+            raw_output=raw_output,
+        )
+
+    answerable = raw_decision.get(
+        "answerable"
+    )
+    evidence_indices = raw_decision.get(
+        "evidence_chunk_indices"
+    )
+
+    if not isinstance(answerable, bool):
+        raise JudgeProtocolError(
+            "Sortie juge invalide : answerable.",
+            raw_output=raw_output,
+        )
+
+    if (
+        not isinstance(evidence_indices, list)
+        or any(
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or index < 0
+            or index >= len(chunks)
+            for index in evidence_indices
+        )
+    ):
+        raise JudgeProtocolError(
+            "Sortie juge invalide : "
+            "evidence_chunk_indices.",
+            raw_output=raw_output,
+        )
+
+    if not answerable and evidence_indices:
+        raise JudgeProtocolError(
+            "Sortie juge incohérente : des preuves "
+            "sont indiquées pour answerable=false.",
+            raw_output=raw_output,
+        )
+
+    return AnswerabilityDecision(
+        answerable=answerable,
+        evidence_chunk_indices=list(
+            dict.fromkeys(evidence_indices)
+        ),
+    )
+
+
+def evaluate_answerability_question(
+    *,
+    question_id: str,
+    question: str,
+    expected_answerable: bool,
+    expected_pages: list[int],
+    chunks: list[RetrievedChunk],
+    model: str,
+    metrics: AnswerabilityMetrics,
+) -> AnswerabilityObservation:
+    try:
+        decision = judge_answerability(
+            question,
+            chunks,
+            model=model,
+        )
+    except JudgeProtocolError as error:
+        metrics.protocol_errors += 1
+
+        print(
+            "  gate     → ERREUR DE PROTOCOLE"
+        )
+        print(f"  ID       : {question_id}")
+        print(f"  Erreur   : {error}")
+        print("  Sortie brute :")
+        print(error.raw_output)
+
+        return AnswerabilityObservation(
+            question_id=question_id,
+            expected_answerable=expected_answerable,
+            expected_pages=expected_pages,
+            decision=None,
+            chunks=chunks,
+            protocol_error=str(error),
+            raw_output=error.raw_output,
+        )
+    except requests.exceptions.RequestException as error:
+        metrics.technical_errors += 1
+        error_type = type(error).__name__
+
+        print(
+            "  gate     → ERREUR TECHNIQUE"
+        )
+        print(f"  ID       : {question_id}")
+        print(f"  Type     : {error_type}")
+        print(f"  Message  : {error}")
+
+        return AnswerabilityObservation(
+            question_id=question_id,
+            expected_answerable=expected_answerable,
+            expected_pages=expected_pages,
+            decision=None,
+            chunks=chunks,
+            technical_error_type=error_type,
+            technical_error_message=str(error),
+        )
+
+    evidence_is_correct = None
+
+    if expected_answerable and decision.answerable:
+        expected_page_set = set(expected_pages)
+        evidence_is_correct = any(
+            chunk_matches_expected_pages(
+                chunks[index],
+                expected_page_set,
+            )
+            for index in decision.evidence_chunk_indices
+        )
+
+    metrics.add(
+        expected=expected_answerable,
+        predicted=decision.answerable,
+        evidence_correct=evidence_is_correct,
+    )
+
+    print(
+        "  gate     → "
+        + (
+            "OUI"
+            if decision.answerable
+            else "NON"
+        )
+        + " | preuves="
+        f"{decision.evidence_chunk_indices}"
+    )
+
+    return AnswerabilityObservation(
+        question_id=question_id,
+        expected_answerable=expected_answerable,
+        expected_pages=expected_pages,
+        decision=decision,
+        chunks=chunks,
+        evidence_correct=evidence_is_correct,
+    )
+
+
+def print_answerability_results(
+    observations: list[AnswerabilityObservation],
+    metrics: AnswerabilityMetrics,
+    *,
+    judge_top_k: int,
+) -> None:
+    print()
+    print("=" * 72)
+    print(
+        "ANSWERABILITY GATE V1 — VECTOR TOP "
+        f"{judge_top_k}"
+    )
+    print("=" * 72)
+
+    print()
+    print("Matrice de confusion")
+    print()
+    print("                         Attendu")
+    print("                     OUI       NON")
+    print(
+        "Prédit OUI      "
+        f"{metrics.true_positive:>6}"
+        f"{metrics.false_positive:>10}"
+    )
+    print(
+        "Prédit NON      "
+        f"{metrics.false_negative:>6}"
+        f"{metrics.true_negative:>10}"
+    )
+
+    print()
+    print(f"Accuracy               : {metrics.accuracy:.3f}")
+    print(f"Précision answerable   : {metrics.precision:.3f}")
+    print(f"Recall answerable      : {metrics.recall:.3f}")
+    print(f"Faux positifs NON → OUI: {metrics.false_positive}")
+    print(f"Faux négatifs OUI → NON: {metrics.false_negative}")
+    print(
+        "answerability_correct   : "
+        f"{metrics.answerability_correct}"
+    )
+    print(
+        "evidence_correct        : "
+        f"{metrics.evidence_correct}"
+    )
+    print(
+        "answerability_and_"
+        "evidence_correct        : "
+        f"{metrics.answerability_and_evidence_correct}"
+    )
+    print(
+        "faux positifs métier    : "
+        f"{metrics.business_false_positives}"
+    )
+    print(
+        "faux négatifs métier    : "
+        f"{metrics.business_false_negatives}"
+    )
+    print(
+        "faux positifs de preuve : "
+        f"{metrics.evidence_false_positives}"
+    )
+    print(f"protocol_errors        : {metrics.protocol_errors}")
+    print(f"technical_errors       : {metrics.technical_errors}")
+
+    protocol_errors = [
+        observation
+        for observation in observations
+        if observation.protocol_error is not None
+    ]
+
+    technical_errors = [
+        observation
+        for observation in observations
+        if observation.technical_error_type is not None
+    ]
+
+    errors = [
+        observation
+        for observation in observations
+        if (
+            observation.decision is not None
+            and observation.expected_answerable
+            != observation.decision.answerable
+        )
+    ]
+
+    evidence_errors = [
+        observation
+        for observation in observations
+        if observation.evidence_correct is False
+    ]
+
+    print(
+        "IDs mal classés        : "
+        + (
+            ", ".join(
+                observation.question_id
+                for observation in errors
+            )
+            if errors
+            else "aucun"
+        )
+    )
+    print(
+        "IDs erreurs protocole  : "
+        + (
+            ", ".join(
+                observation.question_id
+                for observation in protocol_errors
+            )
+            if protocol_errors
+            else "aucun"
+        )
+    )
+    print(
+        "IDs erreurs de preuve  : "
+        + (
+            ", ".join(
+                observation.question_id
+                for observation in evidence_errors
+            )
+            if evidence_errors
+            else "aucun"
+        )
+    )
+    print(
+        "IDs erreurs techniques : "
+        + (
+            ", ".join(
+                observation.question_id
+                for observation in technical_errors
+            )
+            if technical_errors
+            else "aucun"
+        )
+    )
+
+    detailed_errors = list(errors)
+
+    for observation in evidence_errors:
+        if observation not in detailed_errors:
+            detailed_errors.append(observation)
+
+    if not detailed_errors:
+        return
+
+    print()
+    print("DÉTAIL DES ERREURS")
+
+    for observation in detailed_errors:
+        decision = observation.decision
+
+        if decision is None:
+            continue
+
+        print()
+        print("-" * 72)
+        print(f"ID       : {observation.question_id}")
+        print(
+            "Attendu  : "
+            + (
+                "OUI"
+                if observation.expected_answerable
+                else "NON"
+            )
+        )
+        print(
+            "Juge     : "
+            + (
+                "OUI"
+                if decision.answerable
+                else "NON"
+            )
+        )
+        print(
+            "Preuves  : "
+            f"{decision.evidence_chunk_indices}"
+        )
+        print(
+            "Preuve OK: "
+            + (
+                "OUI"
+                if observation.evidence_correct
+                else "NON"
+            )
+        )
+        print(
+            "Pages attendues : "
+            f"{observation.expected_pages}"
+        )
+        print(
+            "Pages    : "
+            + ", ".join(
+                (
+                    f"{chunk.page_start}"
+                    if chunk.page_end in {
+                        None,
+                        chunk.page_start,
+                    }
+                    else (
+                        f"{chunk.page_start}"
+                        f"-{chunk.page_end}"
+                    )
+                )
+                for chunk in observation.chunks
+            )
+        )
+
+        for index, chunk in enumerate(
+            observation.chunks
+        ):
+            print()
+            print(
+                f"CHUNK {index} "
+                f"(pages {chunk.page_start}"
+                + (
+                    ""
+                    if chunk.page_end in {
+                        None,
+                        chunk.page_start,
+                    }
+                    else f"-{chunk.page_end}"
+                )
+                + ")"
+            )
+            print(chunk.content)
+
+
 def main() -> None:
+    arguments = parse_arguments()
+
+    if (
+        arguments.answerability_gate
+        and not arguments.judge_model
+    ):
+        raise ValueError(
+            "Answerability Gate activé sans modèle. "
+            "Utilisez --judge-model ou "
+            "KALIOK_ANSWERABILITY_MODEL."
+        )
+
     dataset = load_dataset()
 
     documents = dataset.get(
@@ -609,6 +1258,13 @@ def main() -> None:
 
     abstention_observations: list[
         AbstentionObservation
+    ] = []
+
+    answerability_metrics = (
+        AnswerabilityMetrics()
+    )
+    answerability_observations: list[
+        AnswerabilityObservation
     ] = []
 
     print()
@@ -749,6 +1405,24 @@ def main() -> None:
                     )
                 )
 
+                if arguments.answerability_gate:
+                    gate_chunks = (
+                        vector_results_for_observation[
+                            :arguments.judge_top_k
+                        ]
+                    )
+                    answerability_observations.append(
+                        evaluate_answerability_question(
+                            question_id=question_id,
+                            question=question,
+                            expected_answerable=False,
+                            expected_pages=[],
+                            chunks=gate_chunks,
+                            model=arguments.judge_model,
+                            metrics=answerability_metrics,
+                        )
+                    )
+
                 continue
 
             answerable_count += 1
@@ -820,6 +1494,24 @@ def main() -> None:
                     ),
                 )
             )
+
+            if arguments.answerability_gate:
+                gate_chunks = (
+                    vector_results_for_observation[
+                        :arguments.judge_top_k
+                    ]
+                )
+                answerability_observations.append(
+                    evaluate_answerability_question(
+                        question_id=question_id,
+                        question=question,
+                        expected_answerable=True,
+                        expected_pages=expected_pages,
+                        chunks=gate_chunks,
+                        model=arguments.judge_model,
+                        metrics=answerability_metrics,
+                    )
+                )
 
     # ---------------------------------------------------------
     # Résultats
@@ -1009,6 +1701,13 @@ def main() -> None:
                 "Chevauchement top1       : "
                 "aucun"
             )
+
+    if arguments.answerability_gate:
+        print_answerability_results(
+            answerability_observations,
+            answerability_metrics,
+            judge_top_k=arguments.judge_top_k,
+        )
 
 
 if __name__ == "__main__":
