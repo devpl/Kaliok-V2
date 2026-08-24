@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, select
@@ -9,6 +10,7 @@ from sqlmodel import Session, select
 from kaliok.documents.docling_adapter import (
     document_content_from_docling,
 )
+from kaliok.documents.docling_client import convert_pdf_with_docling
 from kaliok.documents.models import DocumentContent
 from kaliok.storage.models import (
     ContentBlock,
@@ -21,6 +23,29 @@ from kaliok.storage.models import (
 
 DOCLING_PROCESS_TYPE = "document_extraction"
 DOCLING_ENGINE = "docling"
+
+
+def store_pdf_with_docling(
+    session: Session,
+    document_version: DocumentVersion,
+    pdf_path: Path | str,
+    *,
+    base_url: str | None = None,
+    timeout: float = 300,
+    engine_version: str | None = None,
+) -> ProcessingRun:
+    """Explicitly convert a PDF with Docling, then persist its output."""
+    document = convert_pdf_with_docling(
+        pdf_path,
+        base_url=base_url,
+        timeout=timeout,
+    )
+    return store_docling_document(
+        session,
+        document_version,
+        document,
+        engine_version=engine_version,
+    )
 
 
 def store_docling_document(
