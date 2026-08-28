@@ -8,6 +8,7 @@ from kaliok.ingestion.types import (
     DetectedSource,
     IngestionRequest,
     IngestionResult,
+    NormalizedContentUnit,
     NormalizedDocument,
     SourceReference,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "IngestionRequest",
     "IngestionResult",
     "NoSourceIngestorError",
+    "NormalizedContentUnit",
     "NormalizedDocument",
     "SourceDetector",
     "SourceIngestor",

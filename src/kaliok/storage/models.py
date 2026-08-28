@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, String
+from sqlalchemy import CheckConstraint, Column, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, SQLModel
 
@@ -109,6 +109,46 @@ class DocumentVersion(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utc_now)
     processed_at: datetime | None = None
+
+
+class NormalizedContentUnit(SQLModel, table=True):
+    __tablename__ = "normalized_content_units"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_version_id",
+            "unit_index",
+            name="uq_normalized_content_units_version_index",
+        ),
+        UniqueConstraint(
+            "document_version_id",
+            "source_unit_id",
+            name="uq_normalized_content_units_version_source_unit",
+        ),
+        CheckConstraint(
+            "unit_index >= 0",
+            name="ck_normalized_content_units_index_nonnegative",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    document_version_id: UUID = Field(
+        foreign_key="document_versions.id",
+    )
+
+    parent_unit_id: UUID | None = Field(
+        default=None,
+        foreign_key="normalized_content_units.id",
+    )
+
+    unit_index: int
+    content_type: str
+    content: str
+
+    source_reference: str | None = None
+    source_unit_id: str | None = None
+
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class Page(SQLModel, table=True):

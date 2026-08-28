@@ -11,6 +11,7 @@ from kaliok.ingestion import (
     IngestionRequest,
     IngestionResult,
     NoSourceIngestorError,
+    NormalizedContentUnit,
     NormalizedDocument,
     SourceDetector,
     SourceIngestor,
@@ -48,7 +49,13 @@ class FakeIngestor:
         self.calls.append(("ingest", request, source))
         return NormalizedDocument(
             source=source,
-            content="contenu normalisé",
+            units=(
+                NormalizedContentUnit(
+                    order=0,
+                    content_type="text",
+                    content="contenu normalisé",
+                ),
+            ),
             filename=request.source.name,
             storage_uri=request.source.uri or "memory://normalized",
             content_hash="normalized-hash",

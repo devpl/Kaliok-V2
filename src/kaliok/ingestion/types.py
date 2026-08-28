@@ -34,9 +34,19 @@ class DetectedSource:
 
 
 @dataclass(frozen=True)
+class NormalizedContentUnit:
+    order: int
+    content_type: str
+    content: str
+    source_reference: str | None = None
+    source_unit_id: str | None = None
+    parent_source_unit_id: str | None = None
+
+
+@dataclass(frozen=True)
 class NormalizedDocument:
     source: DetectedSource
-    content: object
+    units: tuple[NormalizedContentUnit, ...]
     filename: str
     storage_uri: str
     content_hash: str

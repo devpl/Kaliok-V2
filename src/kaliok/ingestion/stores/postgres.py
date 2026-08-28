@@ -8,9 +8,19 @@ from kaliok.ingestion.types import (
     Identifier,
     IngestionRequest,
     IngestionResult,
+    NormalizedContentUnit,
     NormalizedDocument,
 )
-from kaliok.storage.models import Document, DocumentVersion, Source
+from kaliok.storage.models import (
+    Document,
+    DocumentVersion,
+    NormalizedContentUnit as StoredContentUnit,
+    Source,
+)
+
+
+class NormalizedContentConflictError(RuntimeError):
+    pass
 
 
 class PostgresDocumentStore:
@@ -38,6 +48,7 @@ class PostgresDocumentStore:
                 document.content_hash,
             )
             if existing_version is not None:
+                self._ensure_content(existing_version, document.units)
                 return self._result(
                     existing_version,
                     document,
@@ -68,6 +79,7 @@ class PostgresDocumentStore:
             )
             self._session.add(version)
             self._session.flush()
+            self._store_content(version.id, document.units)
 
             return self._result(version, document, status="created")
 
@@ -137,6 +149,83 @@ class PostgresDocumentStore:
             ).all()
         )
 
+    def _ensure_content(
+        self,
+        version: DocumentVersion,
+        units: tuple[NormalizedContentUnit, ...],
+    ) -> None:
+        stored = self._stored_content(version.id)
+        if not stored and units:
+            self._store_content(version.id, units)
+            return
+        if not self._content_matches(stored, units):
+            raise NormalizedContentConflictError(
+                "La version existante possède un contenu normalisé différent."
+            )
+
+    def _stored_content(self, version_id: UUID) -> list[StoredContentUnit]:
+        return list(
+            self._session.exec(
+                select(StoredContentUnit)
+                .where(StoredContentUnit.document_version_id == version_id)
+                .order_by(StoredContentUnit.unit_index)
+            ).all()
+        )
+
+    def _store_content(
+        self,
+        version_id: UUID,
+        units: tuple[NormalizedContentUnit, ...],
+    ) -> None:
+        stored_by_source_id: dict[str, StoredContentUnit] = {}
+        pairs: list[tuple[StoredContentUnit, NormalizedContentUnit]] = []
+
+        for unit in units:
+            stored = StoredContentUnit(
+                document_version_id=version_id,
+                unit_index=unit.order,
+                content_type=unit.content_type,
+                content=unit.content,
+                source_reference=unit.source_reference,
+                source_unit_id=unit.source_unit_id,
+            )
+            self._session.add(stored)
+            pairs.append((stored, unit))
+            if unit.source_unit_id is not None:
+                stored_by_source_id[unit.source_unit_id] = stored
+
+        self._session.flush()
+
+        for stored, unit in pairs:
+            if unit.parent_source_unit_id is None:
+                continue
+            parent = stored_by_source_id[unit.parent_source_unit_id]
+            stored.parent_unit_id = parent.id
+            self._session.add(stored)
+
+        self._session.flush()
+
+    @staticmethod
+    def _content_matches(
+        stored: list[StoredContentUnit],
+        units: tuple[NormalizedContentUnit, ...],
+    ) -> bool:
+        if len(stored) != len(units):
+            return False
+        source_id_by_stored_id = {
+            unit.id: unit.source_unit_id for unit in stored
+        }
+        return all(
+            persisted.unit_index == incoming.order
+            and persisted.content_type == incoming.content_type
+            and persisted.content == incoming.content
+            and persisted.source_reference == incoming.source_reference
+            and persisted.source_unit_id == incoming.source_unit_id
+            and source_id_by_stored_id.get(persisted.parent_unit_id)
+            == incoming.parent_source_unit_id
+            for persisted, incoming in zip(stored, units)
+        )
+
     @staticmethod
     def _next_version_number(versions: list[DocumentVersion]) -> int:
         return max((version.version_number for version in versions), default=0) + 1
@@ -153,6 +242,31 @@ class PostgresDocumentStore:
             raise ValueError("NormalizedDocument.file_size ne peut pas être négatif.")
         if document.page_count is not None and document.page_count < 0:
             raise ValueError("NormalizedDocument.page_count ne peut pas être négatif.")
+        orders = [unit.order for unit in document.units]
+        if orders != list(range(len(document.units))):
+            raise ValueError(
+                "Les unités normalisées doivent avoir un ordre continu depuis 0."
+            )
+        source_unit_ids = [
+            unit.source_unit_id
+            for unit in document.units
+            if unit.source_unit_id is not None
+        ]
+        if len(source_unit_ids) != len(set(source_unit_ids)):
+            raise ValueError("Les source_unit_id doivent être uniques.")
+        known_source_ids = set(source_unit_ids)
+        for unit in document.units:
+            if not unit.content_type.strip():
+                raise ValueError("Le content_type d'une unité est requis.")
+            if (
+                unit.parent_source_unit_id is not None
+                and unit.parent_source_unit_id not in known_source_ids
+            ):
+                raise ValueError(
+                    "Chaque parent_source_unit_id doit référencer une unité connue."
+                )
+            if unit.parent_source_unit_id == unit.source_unit_id:
+                raise ValueError("Une unité ne peut pas être son propre parent.")
 
     @staticmethod
     def _uuid(value: Identifier, *, field_name: str) -> UUID:
