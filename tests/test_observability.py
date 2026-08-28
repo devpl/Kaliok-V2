@@ -36,8 +36,8 @@ class FailingObserver:
         raise RuntimeError("backend indisponible")
 
 
-class FakeExtractor:
-    def extract(self, document):
+class FakeContentProvider:
+    def provide(self, document):
         return ExtractedDocument(
             content="contenu",
             provenance=Provenance(
@@ -113,7 +113,7 @@ def make_orchestrator(
     retriever=None,
 ):
     return RagOrchestrator(
-        extractor=FakeExtractor(),
+        content_provider=FakeContentProvider(),
         representation_builder=FakeRepresentationBuilder(),
         embedder=FakeEmbedder(),
         index_store=FakeIndexStore(),
@@ -170,7 +170,7 @@ def test_rag_index_event_order_and_shared_execution_identity():
     assert len(records) == 1
     assert [event.event_name for event in observer.events] == [
         "rag.index.started",
-        "rag.extraction.completed",
+        "rag.source.completed",
         "rag.representation.completed",
         "rag.embedding.completed",
         "rag.indexing.completed",

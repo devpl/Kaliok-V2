@@ -6,18 +6,18 @@ from typing import Protocol
 from kaliok.rag.config import RagPipelineConfig
 from kaliok.rag.context.base import ContextBuilder
 from kaliok.rag.embedding.base import Embedder
-from kaliok.rag.extraction.base import Extractor
 from kaliok.rag.fusion.base import FusionStrategy
 from kaliok.rag.generation.base import Generator
 from kaliok.rag.indexing.base import IndexStore
 from kaliok.rag.representation.base import RepresentationBuilder
 from kaliok.rag.reranking.base import Reranker
 from kaliok.rag.retrieval.base import Retriever
+from kaliok.rag.source.base import ContentProvider
 
 
 @dataclass(frozen=True)
 class RagComponents:
-    extractor: Extractor
+    content_provider: ContentProvider
     representation_builder: RepresentationBuilder
     embedder: Embedder
     index_store: IndexStore

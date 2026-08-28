@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from kaliok.rag import (
     Candidate,
+    ContentProvider,
     ContextBundle,
     EmbeddingRecord,
     ExtractedDocument,
@@ -17,22 +18,22 @@ from kaliok.rag import (
 )
 from kaliok.rag.context import ContextBuilder
 from kaliok.rag.embedding import Embedder
-from kaliok.rag.extraction import Extractor
 from kaliok.rag.fusion import FusionStrategy
 from kaliok.rag.generation import Generator
 from kaliok.rag.indexing import IndexStore
 from kaliok.rag.representation import RepresentationBuilder
 from kaliok.rag.reranking import Reranker
 from kaliok.rag.retrieval import Retriever
+from kaliok.rag.source import ContentProvider as SourceContentProvider
 
 
-class FakeExtractor:
+class FakeContentProvider:
     def __init__(self, calls, provenance):
         self.calls = calls
         self.provenance = provenance
 
-    def extract(self, document):
-        self.calls.append(("extract", document))
+    def provide(self, document):
+        self.calls.append(("source", document))
         return ExtractedDocument("contenu", self.provenance)
 
 
@@ -121,7 +122,7 @@ def _orchestrator(calls, *, fusion=None, reranker=None, retriever=None):
     provenance = Provenance(document_id="document-1", page=4)
     unit = RetrievalUnit("unit-1", "passage", provenance)
     return RagOrchestrator(
-        extractor=FakeExtractor(calls, provenance),
+        content_provider=FakeContentProvider(calls, provenance),
         representation_builder=FakeRepresentationBuilder(calls),
         embedder=FakeEmbedder(calls),
         index_store=FakeIndexStore(calls),
@@ -138,7 +139,8 @@ def test_rag_package_and_protocols_are_importable():
     assert all(
         contract is not None
         for contract in (
-            Extractor,
+            ContentProvider,
+            SourceContentProvider,
             RepresentationBuilder,
             Embedder,
             IndexStore,
@@ -150,7 +152,7 @@ def test_rag_package_and_protocols_are_importable():
         )
     )
     assert RagPipelineConfig(
-        extractor="extractor",
+        content_provider="content-provider",
         representation="representation",
         embedder="embedder",
         index_store="index-store",
@@ -167,7 +169,7 @@ def test_index_calls_components_in_architectural_order():
     records = orchestrator.index("document brut")
 
     assert [call[0] for call in calls] == [
-        "extract",
+        "source",
         "represent",
         "embed_units",
         "index",
@@ -260,7 +262,7 @@ def test_transport_objects_preserve_end_to_end_provenance():
     assert restored.metadata["bbox"] == [1, 2, 3, 4]
 
 
-def test_rag_package_has_no_dependency_on_experimental_implementations():
+def test_rag_package_has_no_legacy_source_or_ingestion_dependencies():
     package = Path(__file__).resolve().parents[1] / "src" / "kaliok" / "rag"
     source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -268,5 +270,8 @@ def test_rag_package_has_no_dependency_on_experimental_implementations():
     )
 
     assert "kaliok.experiments" not in source
+    assert "kaliok.ingestion" not in source
+    assert "kaliok.documents" not in source
+    assert "kaliok.ocr" not in source
     assert "sqlmodel" not in source.lower()
     assert "requests" not in source.lower()

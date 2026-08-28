@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RagPipelineConfig:
-    extractor: str
+    content_provider: str
     representation: str
     embedder: str
     index_store: str

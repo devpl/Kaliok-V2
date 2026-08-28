@@ -9,13 +9,13 @@ from kaliok.observability.noop import NoOpObserver
 from kaliok.observability.timing import Timer
 from kaliok.rag.context.base import ContextBuilder
 from kaliok.rag.embedding.base import Embedder
-from kaliok.rag.extraction.base import Extractor
 from kaliok.rag.fusion.base import FusionStrategy
 from kaliok.rag.generation.base import Generator
 from kaliok.rag.indexing.base import IndexStore
 from kaliok.rag.representation.base import RepresentationBuilder
 from kaliok.rag.reranking.base import Reranker
 from kaliok.rag.retrieval.base import Retriever
+from kaliok.rag.source.base import ContentProvider
 from kaliok.rag.types import EmbeddingRecord, RagAnswer, RankedCandidate
 
 
@@ -23,7 +23,7 @@ class RagOrchestrator:
     def __init__(
         self,
         *,
-        extractor: Extractor,
+        content_provider: ContentProvider,
         representation_builder: RepresentationBuilder,
         embedder: Embedder,
         index_store: IndexStore,
@@ -37,7 +37,7 @@ class RagOrchestrator:
     ) -> None:
         if retrieval_top_k <= 0:
             raise ValueError("retrieval_top_k doit être strictement positif.")
-        self._extractor = extractor
+        self._content_provider = content_provider
         self._representation_builder = representation_builder
         self._embedder = embedder
         self._index_store = index_store
@@ -64,15 +64,15 @@ class RagOrchestrator:
             input_count=1,
         )
         try:
-            operation = "extraction"
-            implementation = type(self._extractor).__name__
+            operation = "source"
+            implementation = type(self._content_provider).__name__
             timer = Timer.start()
-            extracted = self._extractor.extract(document)
+            extracted = self._content_provider.provide(document)
             identity = self._identity(extracted.provenance)
             self._emit(
-                "rag.extraction.completed",
+                "rag.source.completed",
                 execution_id,
-                component="extraction",
+                component="source",
                 implementation=implementation,
                 operation=operation,
                 duration_ms=timer.elapsed_ms(),
