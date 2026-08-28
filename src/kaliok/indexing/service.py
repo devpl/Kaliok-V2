@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from kaliok.embeddings.ollama import (
     EMBEDDING_MODEL,
     embed_texts,
 )
+from kaliok.hashing import calculate_sha256
 from kaliok.paths import TEST_DOCUMENTS
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
@@ -50,21 +50,6 @@ class IndexDocumentResult:
     embedding_model_id: UUID
     chunk_count: int
     already_indexed: bool
-
-
-def calculate_sha256(path: Path) -> str:
-    sha256 = hashlib.sha256()
-
-    with path.open("rb") as file:
-        while True:
-            block = file.read(1024 * 1024)
-
-            if not block:
-                break
-
-            sha256.update(block)
-
-    return sha256.hexdigest()
 
 
 def get_or_create_source(
