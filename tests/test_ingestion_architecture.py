@@ -49,6 +49,11 @@ class FakeIngestor:
         return NormalizedDocument(
             source=source,
             content="contenu normalisé",
+            filename=request.source.name,
+            storage_uri=request.source.uri or "memory://normalized",
+            content_hash="normalized-hash",
+            file_size=request.source.size,
+            mime_type=source.media_type,
             title=request.source.name,
         )
 
@@ -213,8 +218,13 @@ def test_ingestion_error_is_emitted_and_original_exception_is_raised():
 
 def test_ingestion_package_has_no_rag_or_concrete_format_dependencies():
     package = Path(__file__).resolve().parents[1] / "src" / "kaliok" / "ingestion"
+    core_files = [
+        path
+        for path in package.glob("*.py")
+        if path.name != "__init__.py"
+    ]
     source = "\n".join(
-        path.read_text(encoding="utf-8") for path in package.rglob("*.py")
+        path.read_text(encoding="utf-8") for path in core_files
     )
 
     assert "kaliok.rag" not in source
