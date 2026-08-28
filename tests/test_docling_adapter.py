@@ -346,6 +346,44 @@ def test_second_identical_docling_call_is_idempotent(docling_session):
     assert page.perception_processing_run_id is None
 
 
+def test_two_identical_pdf_conversions_reuse_the_same_run(
+    docling_session,
+    monkeypatch,
+):
+    version, _ = _create_version(docling_session)
+    network_calls = 0
+
+    def fake_convert(*args, **kwargs):
+        nonlocal network_calls
+        network_calls += 1
+        document = deepcopy(_docling_document())
+        document["version"] = "1.10.0"
+        return document
+
+    monkeypatch.setattr(docling, "convert_pdf_with_docling", fake_convert)
+
+    first_run = docling.store_pdf_with_docling(
+        docling_session,
+        version,
+        "structured.pdf",
+    )
+    second_run = docling.store_pdf_with_docling(
+        docling_session,
+        version,
+        "structured.pdf",
+    )
+
+    assert network_calls == 2
+    assert second_run.id == first_run.id
+    assert first_run.engine_version == "1.10.0"
+    assert docling_session.exec(
+        select(func.count(ProcessingRun.id)).where(
+            ProcessingRun.document_version_id == version.id,
+            ProcessingRun.engine == "docling",
+        )
+    ).one() == 1
+
+
 def test_different_docling_json_creates_a_new_generation(docling_session):
     version, _ = _create_version(docling_session)
     first_document = _docling_document()

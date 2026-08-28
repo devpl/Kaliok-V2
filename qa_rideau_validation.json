@@ -1,0 +1,223 @@
+{
+  "dataset": "rideau-validation-v1",
+  "description": "Corpus dédié à RIDEAU.pdf pour comparer le retrieval Kaliok actuel et un retrieval expérimental Docling.",
+  "documents": [
+    {
+      "file": "RIDEAU.pdf",
+      "questions": [
+        {
+          "id": "rideau-001",
+          "question": "À qui est destiné le projet de véranda ?",
+          "answerable": true,
+          "expected_pages": [
+            1
+          ],
+          "expected_answer": "Mme PELLEGRIN"
+        },
+        {
+          "id": "rideau-002",
+          "question": "Quelle est l'adresse du projet ?",
+          "answerable": true,
+          "expected_pages": [
+            1
+          ],
+          "expected_answer": "38, rue Pasteur, 78 700 Conflans Ste Honorine"
+        },
+        {
+          "id": "rideau-003",
+          "question": "Quel est le numéro de téléphone indiqué pour le projet ?",
+          "answerable": true,
+          "expected_pages": [
+            1
+          ],
+          "expected_answer": "06 83 63 76 95"
+        },
+        {
+          "id": "rideau-004",
+          "question": "Quelle option de fermeture est indiquée dans le lexique de la véranda ?",
+          "answerable": true,
+          "expected_pages": [
+            2
+          ],
+          "expected_answer": "Serrure 1 ou 3 points"
+        },
+        {
+          "id": "rideau-005",
+          "question": "Quel type de commande est mentionné pour les spots intégrés ?",
+          "answerable": true,
+          "expected_pages": [
+            2
+          ],
+          "expected_answer": "Commande à distance, avec option de domotique"
+        },
+        {
+          "id": "rideau-006",
+          "question": "Quelles sont les dimensions extérieures de la véranda décrite dans l'étude technique ?",
+          "answerable": true,
+          "expected_pages": [
+            3
+          ],
+          "expected_answer": "4 700 x 3 500"
+        },
+        {
+          "id": "rideau-007",
+          "question": "Quelle est la composition d'alliage des profils aluminium ?",
+          "answerable": true,
+          "expected_pages": [
+            3
+          ],
+          "expected_answer": "6060 T6"
+        },
+        {
+          "id": "rideau-008",
+          "question": "Quelle norme européenne est indiquée pour le laquage et quelle épaisseur est mentionnée ?",
+          "answerable": true,
+          "expected_pages": [
+            3
+          ],
+          "expected_answer": "QUALICOAT, 120 microns"
+        },
+        {
+          "id": "rideau-009",
+          "question": "À quelle norme répondent les produits composant la véranda et par quel organisme sont-ils certifiés ?",
+          "answerable": true,
+          "expected_pages": [
+            3
+          ],
+          "expected_answer": "RT2012, certifiés par le CSTB"
+        },
+        {
+          "id": "rideau-010",
+          "question": "Quelle est la forme de toiture prévue ?",
+          "answerable": true,
+          "expected_pages": [
+            4
+          ],
+          "expected_answer": "Mono pente avec une croupe"
+        },
+        {
+          "id": "rideau-011",
+          "question": "Quelle épaisseur d'isolant de toiture est prévue et quel coefficient Ug est indiqué ?",
+          "answerable": true,
+          "expected_pages": [
+            4
+          ],
+          "expected_answer": "66 mm et Ug 0,40"
+        },
+        {
+          "id": "rideau-012",
+          "question": "Quel vitrage de toiture est prévu avec contrôle solaire et argon ?",
+          "answerable": true,
+          "expected_pages": [
+            4
+          ],
+          "expected_answer": "Vitrage feuilleté 6+16+44² ITR avec contrôle solaire + argon"
+        },
+        {
+          "id": "rideau-013",
+          "question": "Quelle certification est indiquée pour le double vitrage de façade ?",
+          "answerable": true,
+          "expected_pages": [
+            5
+          ],
+          "expected_answer": "CEKAL"
+        },
+        {
+          "id": "rideau-014",
+          "question": "Quelle est la capacité des grilles de ventilation intégrées de marque Renson ?",
+          "answerable": true,
+          "expected_pages": [
+            5
+          ],
+          "expected_answer": "110 m3/heure/ml"
+        },
+        {
+          "id": "rideau-015",
+          "question": "Quelle marque de balais brosses est utilisée pour l'étanchéité à l'air des coulissants ?",
+          "answerable": true,
+          "expected_pages": [
+            5
+          ],
+          "expected_answer": "SEAFIL"
+        },
+        {
+          "id": "rideau-016",
+          "question": "Quel est le délai de fabrication annoncé après le passage du métreur et la maçonnerie ?",
+          "answerable": true,
+          "expected_pages": [
+            6
+          ],
+          "expected_answer": "Entre 10 et 14 semaines"
+        },
+        {
+          "id": "rideau-017",
+          "question": "Quelles sont les conditions de paiement prévues ?",
+          "answerable": true,
+          "expected_pages": [
+            6
+          ],
+          "expected_answer": "30 % à la commande, 30 % au métrage, 30 % au démarrage de la pose et le solde à la fin de la pose"
+        },
+        {
+          "id": "rideau-018",
+          "question": "Quel est le prix TTC livré et posé ?",
+          "answerable": true,
+          "expected_pages": [
+            6
+          ],
+          "expected_answer": "23 446,00 €"
+        },
+        {
+          "id": "rideau-019",
+          "question": "Quel type de vitrage de toiture est mentionné sur la page dédiée au vitrage ?",
+          "answerable": true,
+          "expected_pages": [
+            7
+          ],
+          "expected_answer": "CLIMA+ 4Saisons"
+        },
+        {
+          "id": "rideau-020",
+          "question": "Quelles dimensions principales apparaissent sur la vue du dessus et la vue de face du projet ?",
+          "answerable": true,
+          "expected_pages": [
+            9
+          ],
+          "expected_answer": "4 700 mm et 3 500 mm"
+        },
+        {
+          "id": "rideau-021",
+          "question": "Quelles largeurs sont indiquées sur les vues de gauche et de droite ?",
+          "answerable": true,
+          "expected_pages": [
+            10
+          ],
+          "expected_answer": "2 250 et 2 750"
+        },
+        {
+          "id": "rideau-022",
+          "question": "Quelles perspectives sont présentées sur la dernière page ?",
+          "answerable": true,
+          "expected_pages": [
+            11
+          ],
+          "expected_answer": "Perspective gauche et perspective droite"
+        },
+        {
+          "id": "rideau-023",
+          "question": "Quelle est la puissance du moteur de la véranda ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        },
+        {
+          "id": "rideau-024",
+          "question": "Quelle est la date prévue de livraison définitive ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,151 @@
+{
+  "dataset": "notice-51423-validation-v1",
+  "description": "Corpus de validation dédié à la notice explicative Cerfa n° 51423#05, défini manuellement à partir du PDF.",
+  "documents": [
+    {
+      "file": "notice_51423#05.pdf",
+      "questions": [
+        {
+          "id": "notice-001",
+          "question": "Combien de temps une demande de logement social reste-t-elle valide et quand faut-il engager son renouvellement ?",
+          "answerable": true,
+          "expected_pages": [3],
+          "expected_answer": "La demande est valable 12 mois et le renouvellement doit être engagé un mois avant son expiration, soit au bout de 11 mois."
+        },
+        {
+          "id": "notice-002",
+          "question": "La même demande peut-elle couvrir plusieurs départements en Île-de-France, et quelle règle s'applique hors Île-de-France ?",
+          "answerable": true,
+          "expected_pages": [2],
+          "expected_answer": "Une seule demande couvre les départements franciliens 75, 77, 78, 91, 92, 93, 94 et 95 ; hors Île-de-France, il faut déposer une demande par département."
+        },
+        {
+          "id": "notice-003",
+          "question": "Quelles catégories de personnes vivant dans le futur logement doivent être mentionnées dans la demande ?",
+          "answerable": true,
+          "expected_pages": [4],
+          "expected_answer": "Le conjoint ou codemandeur, les colocataires, les personnes à charge et les autres enfants."
+        },
+        {
+          "id": "notice-004",
+          "question": "Outre sa civilité, quels renseignements d'identité doivent être fournis pour un conjoint ou un codemandeur ?",
+          "answerable": true,
+          "expected_pages": [6],
+          "expected_answer": "Son nom de naissance, ses prénoms, sa date de naissance, sa nationalité et son numéro de Sécurité sociale à 15 chiffres en case B1."
+        },
+        {
+          "id": "notice-005",
+          "question": "Qui peut être déclaré comme conjoint ou codemandeur sans avoir à déposer une autre demande de logement social ?",
+          "answerable": true,
+          "expected_pages": [6],
+          "expected_answer": "Le mari ou la femme, le partenaire de PACS, le concubin, ainsi qu'un ascendant, un descendant ou un membre de la fratrie."
+        },
+        {
+          "id": "notice-006",
+          "question": "Que doit faire une personne en cours de séparation dans les rubriques concernant le conjoint et la situation ?",
+          "answerable": true,
+          "expected_pages": [6],
+          "expected_answer": "Elle ne renseigne rien dans la rubrique « votre conjoint » et coche « Divorce ou Séparation » en case F44."
+        },
+        {
+          "id": "notice-007",
+          "question": "Comment signaler plusieurs personnes handicapées qui vivront dans le logement demandé ?",
+          "answerable": true,
+          "expected_pages": [7],
+          "expected_answer": "Il faut indiquer leur nombre total en case C1 et remplir le volet handicap en annexe autant de fois qu'il y a de personnes handicapées."
+        },
+        {
+          "id": "notice-008",
+          "question": "Quelles personnes majeures peuvent être considérées comme fiscalement à charge ?",
+          "answerable": true,
+          "expected_pages": [7],
+          "expected_answer": "Les personnes majeures rattachées au foyer fiscal âgées de moins de 21 ans, les étudiantes de moins de 25 ans, ou les personnes handicapées quel que soit leur âge."
+        },
+        {
+          "id": "notice-009",
+          "question": "Quelles catégories professionnelles publiques sont distinguées dans la notice et peuvent donner accès à des logements réservés ?",
+          "answerable": true,
+          "expected_pages": [8],
+          "expected_answer": "Agent de l'État, agent hospitalier et agent de collectivité territoriale."
+        },
+        {
+          "id": "notice-010",
+          "question": "Dans quels cas faut-il renseigner le SIRET de l'employeur principal et dans quelles cases ?",
+          "answerable": true,
+          "expected_pages": [9],
+          "expected_answer": "Lorsqu'on est salarié ou apprenti d'une entreprise privée et qu'on travaille dans un établissement situé en France ; le SIRET doit être indiqué en cases D12 et D27."
+        },
+        {
+          "id": "notice-011",
+          "question": "Où trouve-t-on le revenu fiscal de référence demandé et que doit faire une personne qui n'a reçu aucun des avis correspondants ?",
+          "answerable": true,
+          "expected_pages": [9],
+          "expected_answer": "Il figure sur l'avis d'impôt sur le revenu ou l'avis de situation déclarative à l'impôt sur le revenu ; sans l'un de ces avis, il faut l'indiquer en page 10, case H1."
+        },
+        {
+          "id": "notice-012",
+          "question": "À quoi correspondent l'année N-1 et les cases E5 et E6 relatives aux revenus ?",
+          "answerable": true,
+          "expected_pages": [10],
+          "expected_answer": "N-1 est l'année précédant la demande ou son renouvellement ; E5 contient les revenus du demandeur et de son conjoint, et E6 ceux du codemandeur, pour cette année."
+        },
+        {
+          "id": "notice-013",
+          "question": "Comment calculer une ressource mensuelle moyenne lorsque son montant varie chaque mois ?",
+          "answerable": true,
+          "expected_pages": [10],
+          "expected_answer": "Il faut totaliser les revenus de l'année écoulée puis diviser ce total par 12."
+        },
+        {
+          "id": "notice-014",
+          "question": "Que signifient les sigles CHRS, CHU, CADA, CPH et HUDA dans la rubrique sur les structures d'hébergement ?",
+          "answerable": true,
+          "expected_pages": [11],
+          "expected_answer": "Centre d'hébergement et de réinsertion sociale, centre d'hébergement d'urgence, centre d'accueil pour demandeurs d'asile, centre provisoire d'hébergement et hébergement d'urgence pour demandeurs d'asile."
+        },
+        {
+          "id": "notice-015",
+          "question": "Quelle durée maximale moyenne caractérise le logement temporaire et quelle case faut-il cocher pour un dispositif comme SOLIBAIL ?",
+          "answerable": true,
+          "expected_pages": [11],
+          "expected_answer": "La durée est en moyenne de six mois au maximum et il faut cocher la case « Logement temporaire » F12."
+        },
+        {
+          "id": "notice-016",
+          "question": "Quelle différence la notice établit-elle entre un logement non décent et un logement indigne ?",
+          "answerable": true,
+          "expected_pages": [12],
+          "expected_answer": "La non-décence est notamment constatée par la CAF, la MSA, un juge civil ou un document probant ; l'indignité doit être prouvée, notamment par un arrêté de police relatif à l'insalubrité, au danger ou à d'autres situations d'habitat indigne."
+        },
+        {
+          "id": "notice-017",
+          "question": "Quelles démarches chaque personne souhaitant partager une colocation avec des personnes déterminées doit-elle accomplir dans le formulaire ?",
+          "answerable": true,
+          "expected_pages": [13],
+          "expected_answer": "Chaque colocataire dépose une demande individuelle, coche la case G1 « chambre dans une colocation » et renseigne la rubrique « Colocataires » avec le nom, les prénoms et la date de naissance de chacun."
+        },
+        {
+          "id": "notice-018",
+          "question": "À quelles quatre finalités les données du système national d'enregistrement peuvent-elles servir ?",
+          "answerable": true,
+          "expected_pages": [14],
+          "expected_answer": "Enregistrer les demandes, attribuer un numéro unique, mettre les demandes à disposition des acteurs du logement social pour l'attribution et produire des statistiques nationales et locales."
+        },
+        {
+          "id": "notice-019",
+          "question": "Quel est le plafond annuel de revenu fiscal permettant d'obtenir un logement social en 2023 ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        },
+        {
+          "id": "notice-020",
+          "question": "Quel délai moyen sépare l'enregistrement de la demande de l'attribution effective d'un logement ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        }
+      ]
+    }
+  ]
+}

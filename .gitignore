@@ -5,3 +5,8 @@ __pycache__/
 *.egg-info/
 .env
 test_documents/
+
+# Artefacts locaux de benchmark / Docling
+RIDEAU_docling.json
+RIDEAU_docling_server_response.json
+benchmark_embed_timing.txt

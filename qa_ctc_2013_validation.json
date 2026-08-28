@@ -1,0 +1,151 @@
+{
+  "dataset": "ctc-2013-validation-v1",
+  "description": "Corpus dédié au rapport d'activités 2013 de la chambre territoriale des comptes de Nouvelle-Calédonie, défini manuellement à partir du PDF.",
+  "documents": [
+    {
+      "file": "rapport-d-activit--s-2013-de-la-ctc-NC_1.pdf",
+      "questions": [
+        {
+          "id": "ctc-001",
+          "question": "Quelle est la superficie terrestre de la Nouvelle-Calédonie et quelle est l'étendue approximative de sa zone économique exclusive ?",
+          "answerable": true,
+          "expected_pages": [4],
+          "expected_answer": "18 575 km² et un peu moins de 1,4 million de km²"
+        },
+        {
+          "id": "ctc-002",
+          "question": "Quelle ressource domine très largement les ventes de la Nouvelle-Calédonie à l'étranger ?",
+          "answerable": true,
+          "expected_pages": [5],
+          "expected_answer": "Le nickel et ses produits, qui représentent 95 % des exportations"
+        },
+        {
+          "id": "ctc-003",
+          "question": "Quelles sont les trois grandes missions exercées par la chambre territoriale des comptes ?",
+          "answerable": true,
+          "expected_pages": [6],
+          "expected_answer": "Examiner la gestion, juger les comptes des comptables publics et rendre des avis, notamment en matière de contrôle budgétaire"
+        },
+        {
+          "id": "ctc-004",
+          "question": "Sur quels trois aspects porte l'examen de la gestion prévu par le code des juridictions financières ?",
+          "answerable": true,
+          "expected_pages": [9],
+          "expected_answer": "La régularité des actes de gestion, l'économie des moyens mis en œuvre et l'évaluation des résultats atteints par rapport aux objectifs"
+        },
+        {
+          "id": "ctc-005",
+          "question": "Dans quel délai la chambre doit-elle rendre son avis lorsqu'elle est saisie de l'extérieur dans le cadre d'un contrôle non programmé ?",
+          "answerable": true,
+          "expected_pages": [11],
+          "expected_answer": "Un mois"
+        },
+        {
+          "id": "ctc-006",
+          "question": "Quels sont les trois objectifs du plan régional de renforcement institutionnel mis en œuvre par le PASAI ?",
+          "answerable": true,
+          "expected_pages": [12],
+          "expected_answer": "Répondre aux besoins de formation et de services connexes, partager l'information, les méthodologies et les technologies de contrôle, et promouvoir les meilleures pratiques tout en renforçant les structures organisationnelles"
+        },
+        {
+          "id": "ctc-007",
+          "question": "Quel était le budget de fonctionnement hors personnel de la chambre en 2013, et de combien avait-il diminué par rapport à 2012 ?",
+          "answerable": true,
+          "expected_pages": [13],
+          "expected_answer": "33,3 millions de francs CFP, soit 279 511 euros, en baisse de 12,9 %"
+        },
+        {
+          "id": "ctc-008",
+          "question": "Comment les 12,5 équivalents temps plein de la chambre étaient-ils répartis ?",
+          "answerable": true,
+          "expected_pages": [14],
+          "expected_answer": "4,5 magistrats, 3 assistants de vérification et 5 agents administratifs"
+        },
+        {
+          "id": "ctc-009",
+          "question": "Quels sont les noms des trois premiers conseillers figurant dans l'organigramme ?",
+          "answerable": true,
+          "expected_pages": [17],
+          "expected_answer": "Philippe Pont, Marie-Ange Gerbal et Thomas Govedarica"
+        },
+        {
+          "id": "ctc-010",
+          "question": "D'après le tableau des organismes contrôlés, combien d'entités sont recensées au total et quel montant cumulé de recettes de fonctionnement représentent-elles ?",
+          "answerable": true,
+          "expected_pages": [18],
+          "expected_answer": "133 entités et 3 556 millions d'euros"
+        },
+        {
+          "id": "ctc-011",
+          "question": "Quels sont les trois premiers comptes publics significatifs et leurs recettes de fonctionnement ?",
+          "answerable": true,
+          "expected_pages": [19],
+          "expected_answer": "Le territoire de la Nouvelle-Calédonie : 1 495 millions d'euros ; la province Sud : 374 millions ; la province Nord : 207 millions"
+        },
+        {
+          "id": "ctc-012",
+          "question": "Combien de séances la chambre a-t-elle tenues en 2013, dont combien consacrées à l'examen de rapports, jugements et avis ?",
+          "answerable": true,
+          "expected_pages": [20],
+          "expected_answer": "28 séances au total, dont 15 consacrées à l'examen de rapports, jugements et avis"
+        },
+        {
+          "id": "ctc-013",
+          "question": "Pour 2013, combien de jugements, d'ordonnances et de débets ont été prononcés, et quel était le montant des débets ?",
+          "answerable": true,
+          "expected_pages": [21],
+          "expected_answer": "3 jugements, 17 ordonnances, 2 débets pour un montant de 20 141 euros"
+        },
+        {
+          "id": "ctc-014",
+          "question": "Comment se répartissaient les quinze rapports d'observations produits en 2013 entre rapports provisoires et définitifs ?",
+          "answerable": true,
+          "expected_pages": [21],
+          "expected_answer": "7 rapports d'observations provisoires et 8 rapports d'observations définitives"
+        },
+        {
+          "id": "ctc-015",
+          "question": "Quelles communes ont fait l'objet de rapports d'observations définitives en 2013 ?",
+          "answerable": true,
+          "expected_pages": [22],
+          "expected_answer": "Nouméa, Koumac, Maré, Ouvéa, Moindou et Hienghène"
+        },
+        {
+          "id": "ctc-016",
+          "question": "Quelles anomalies relatives à la fiabilité des comptes publics la chambre signale-t-elle encore ?",
+          "answerable": true,
+          "expected_pages": [23],
+          "expected_answer": "Des créances douteuses importantes non provisionnées, un suivi patrimonial insuffisant et des travaux en régie non comptabilisés"
+        },
+        {
+          "id": "ctc-017",
+          "question": "Quelle était la période prévue pour la concession de l'aqueduc du Grand Nouméa et quelle était la longueur de l'ouvrage ?",
+          "answerable": true,
+          "expected_pages": [26],
+          "expected_answer": "De 1998 à 2048, pour un aqueduc de 60 km"
+        },
+        {
+          "id": "ctc-018",
+          "question": "Quelles collectivités ultramarines, en plus de la Nouvelle-Calédonie, étaient étudiées dans le rapport sur l'autonomie fiscale ?",
+          "answerable": true,
+          "expected_pages": [27],
+          "expected_answer": "La Polynésie française, Saint-Barthélemy, Saint-Martin, Saint-Pierre-et-Miquelon et Wallis-et-Futuna"
+        },
+        {
+          "id": "ctc-019",
+          "question": "Combien de kilomètres les agents de la chambre ont-ils parcourus en mission en 2013 ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        },
+        {
+          "id": "ctc-020",
+          "question": "Quel budget de fonctionnement la chambre avait-elle prévu pour l'année 2014 ?",
+          "answerable": false,
+          "expected_pages": [],
+          "expected_answer": null
+        }
+      ]
+    }
+  ]
+}

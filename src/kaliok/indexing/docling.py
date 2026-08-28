@@ -10,7 +10,10 @@ from sqlmodel import Session, select
 from kaliok.documents.docling_adapter import (
     document_content_from_docling,
 )
-from kaliok.documents.docling_client import convert_pdf_with_docling
+from kaliok.documents.docling_client import (
+    convert_pdf_with_docling,
+    convert_pdf_with_docling_async,
+)
 from kaliok.documents.models import DocumentContent
 from kaliok.storage.models import (
     ContentBlock,
@@ -40,11 +43,48 @@ def store_pdf_with_docling(
         base_url=base_url,
         timeout=timeout,
     )
+    resolved_engine_version = (
+        engine_version
+        if engine_version is not None
+        else document.get("version")
+    )
     return store_docling_document(
         session,
         document_version,
         document,
-        engine_version=engine_version,
+        engine_version=resolved_engine_version,
+    )
+
+
+def store_pdf_with_docling_async(
+    session: Session,
+    document_version: DocumentVersion,
+    pdf_path: Path | str,
+    *,
+    base_url: str | None = None,
+    submit_timeout: float = 60,
+    poll_interval: float = 2.0,
+    overall_timeout: float = 1800,
+    engine_version: str | None = None,
+) -> ProcessingRun:
+    """Explicitly convert through Docling async, then persist the result."""
+    document = convert_pdf_with_docling_async(
+        pdf_path,
+        base_url=base_url,
+        submit_timeout=submit_timeout,
+        poll_interval=poll_interval,
+        overall_timeout=overall_timeout,
+    )
+    resolved_engine_version = (
+        engine_version
+        if engine_version is not None
+        else document.get("version")
+    )
+    return store_docling_document(
+        session,
+        document_version,
+        document,
+        engine_version=resolved_engine_version,
     )
 
 
