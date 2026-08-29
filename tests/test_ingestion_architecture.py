@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from kaliok.ingestion import (
+    DeclaredMediaTypeDetector,
     DetectedSource,
     DocumentStore,
     IngestionOrchestrator,
@@ -14,6 +15,7 @@ from kaliok.ingestion import (
     NormalizedContentUnit,
     NormalizedDocument,
     SourceDetector,
+    SourceDetectionError,
     SourceIngestor,
     SourceIngestorSelector,
     SourceReference,
@@ -144,6 +146,28 @@ def test_selector_chooses_first_compatible_ingestor():
     selected = SourceIngestorSelector([first, second]).select(source)
 
     assert selected is second
+
+
+def test_declared_media_type_detector_uses_injected_mapping():
+    source = SourceReference(name="notes", media_type="text/example")
+
+    detected = DeclaredMediaTypeDetector(
+        {"text/example": "declared-text"}
+    ).detect(source)
+
+    assert detected.source is source
+    assert detected.source_type == "declared-text"
+    assert detected.media_type == "text/example"
+    assert detected.confidence == 1.0
+
+
+def test_declared_media_type_detector_rejects_unknown_media_type():
+    source = SourceReference(name="notes", media_type="text/unknown")
+
+    with pytest.raises(SourceDetectionError, match="text/unknown"):
+        DeclaredMediaTypeDetector({"text/example": "declared-text"}).detect(
+            source
+        )
 
 
 def test_selector_rejects_unsupported_source():

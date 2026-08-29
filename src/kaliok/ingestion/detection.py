@@ -1,9 +1,38 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from kaliok.ingestion.base import SourceIngestor
-from kaliok.ingestion.types import DetectedSource
+from kaliok.ingestion.types import DetectedSource, SourceReference
+
+
+class SourceDetectionError(ValueError):
+    pass
+
+
+class DeclaredMediaTypeDetector:
+    """Resolve a source type from an explicitly declared media type."""
+
+    def __init__(self, source_types_by_media_type: Mapping[str, str]) -> None:
+        self._source_types_by_media_type = dict(source_types_by_media_type)
+
+    def detect(self, source: SourceReference) -> DetectedSource:
+        media_type = source.media_type
+        if media_type is None or not media_type.strip():
+            raise SourceDetectionError(
+                "SourceReference.media_type est requis pour la détection déclarative."
+            )
+        source_type = self._source_types_by_media_type.get(media_type)
+        if source_type is None:
+            raise SourceDetectionError(
+                f"Aucun type de source déclaré pour le media type {media_type!r}."
+            )
+        return DetectedSource(
+            source=source,
+            source_type=source_type,
+            media_type=media_type,
+            confidence=1.0,
+        )
 
 
 class NoSourceIngestorError(LookupError):

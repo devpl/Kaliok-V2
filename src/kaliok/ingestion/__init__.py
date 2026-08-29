@@ -1,6 +1,8 @@
 from kaliok.ingestion.base import DocumentStore, SourceDetector, SourceIngestor
 from kaliok.ingestion.detection import (
+    DeclaredMediaTypeDetector,
     NoSourceIngestorError,
+    SourceDetectionError,
     SourceIngestorSelector,
 )
 from kaliok.ingestion.orchestrator import IngestionOrchestrator
@@ -15,6 +17,7 @@ from kaliok.ingestion.types import (
 
 __all__ = [
     "DetectedSource",
+    "DeclaredMediaTypeDetector",
     "DocumentStore",
     "IngestionOrchestrator",
     "IngestionRequest",
@@ -23,6 +26,7 @@ __all__ = [
     "NormalizedContentUnit",
     "NormalizedDocument",
     "SourceDetector",
+    "SourceDetectionError",
     "SourceIngestor",
     "SourceIngestorSelector",
     "SourceReference",
