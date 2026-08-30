@@ -4,7 +4,14 @@
 
 {% block content %}
     <h1>Documents</h1>
-
+    <p>
+        API technique :
+        {% if api_status.status == "ok" %}
+            <strong>disponible</strong>
+        {% else %}
+            <strong>indisponible</strong>
+        {% endif %}
+    </p>
     {% if documents %}
         <table>
             <thead>

@@ -81,12 +81,23 @@ def test_home_page_responds(monkeypatch):
         lambda engine: fake_session,
     )
 
+    monkeypatch.setattr(
+        views,
+        "get_api_status",
+        lambda: {
+            "status": "ok",
+            "service": "kaliok-api",
+        },
+    )
+
     client = Client()
 
     response = client.get(reverse("home"))
 
     assert response.status_code == 200
     assert b"Documents" in response.content
+    assert b"API technique" in response.content
+    assert b"disponible" in response.content
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
