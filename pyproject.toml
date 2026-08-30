@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "kaliok V2"
 requires-python = ">=3.13"
 dependencies = [
+    "Django>=6.1,<7",
+    "fastapi>=0.141,<0.142",
+    "uvicorn>=0.52,<0.53",
+    "sqlmodel>=0.0.39,<0.1",
+    "SQLAlchemy>=2.0.52,<2.1",
     "opentelemetry-api>=1.44,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
     "opentelemetry-sdk>=1.44,<2",

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}kaliok{% endblock %}</title>
+</head>
+<body>
+
+<header>
+    <nav>
+        <strong>kaliok</strong>
+        <a href="{% url 'home' %}">Accueil</a>
+    </nav>
+</header>
+
+<main>
+    {% block content %}
+    {% endblock %}
+</main>
+
+<footer>
+    <small>kaliok V2</small>
+</footer>
+
+</body>
+</html>

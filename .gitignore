@@ -10,3 +10,6 @@ test_documents/
 RIDEAU_docling.json
 RIDEAU_docling_server_response.json
 benchmark_embed_timing.txt
+
+# Base SQLite locale Django
+db.sqlite3

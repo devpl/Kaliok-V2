@@ -1,0 +1,42 @@
+{% extends "core_ui/base.html" %}
+
+{% block title %}Documents — kaliok{% endblock %}
+
+{% block content %}
+    <h1>Documents</h1>
+
+    {% if documents %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Titre</th>
+                    <th>Famille</th>
+                    <th>Langue</th>
+                    <th>Statut</th>
+                    <th>Créé le</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for document in documents %}
+                    <tr>
+                        <td>
+                            <a href="{% url 'document_detail' document.id %}">
+                                {% if document.title %}
+                                    {{ document.title }}
+                                {% else %}
+                                    {{ document.id }}
+                                {% endif %}
+                            </a>
+                        </td>
+                        <td>{{ document.document_family|default:"—" }}</td>
+                        <td>{{ document.language|default:"—" }}</td>
+                        <td>{{ document.status }}</td>
+                        <td>{{ document.created_at }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Aucun document enregistré.</p>
+    {% endif %}
+{% endblock %}

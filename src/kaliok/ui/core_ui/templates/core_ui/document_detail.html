@@ -1,0 +1,114 @@
+{% extends "core_ui/base.html" %}
+
+{% block title %}Document — kaliok{% endblock %}
+
+{% block content %}
+    <p>
+        <a href="{% url 'home' %}">← Retour aux documents</a>
+    </p>
+
+    <h1>
+        {% if document.title %}
+            {{ document.title }}
+        {% else %}
+            Document
+        {% endif %}
+    </h1>
+
+    <h2>Document</h2>
+
+    <dl>
+        <dt>ID</dt>
+        <dd><code>{{ document.id }}</code></dd>
+
+        <dt>Statut</dt>
+        <dd>{{ document.status }}</dd>
+
+        <dt>Famille</dt>
+        <dd>{{ document.document_family|default:"—" }}</dd>
+
+        <dt>Langue</dt>
+        <dd>{{ document.language|default:"—" }}</dd>
+
+        <dt>Créé le</dt>
+        <dd>{{ document.created_at }}</dd>
+    </dl>
+
+    <h2>Version courante</h2>
+
+    {% if current_version %}
+        <dl>
+            <dt>ID</dt>
+            <dd><code>{{ current_version.id }}</code></dd>
+
+            <dt>Version</dt>
+            <dd>{{ current_version.version_number }}</dd>
+
+            <dt>Fichier</dt>
+            <dd>{{ current_version.filename }}</dd>
+
+            <dt>Type MIME</dt>
+            <dd>{{ current_version.mime_type|default:"—" }}</dd>
+
+            <dt>Taille</dt>
+            <dd>{{ current_version.file_size|default:"—" }}</dd>
+
+            <dt>Pages</dt>
+            <dd>{{ current_version.page_count|default:"—" }}</dd>
+
+            <dt>Statut de traitement</dt>
+            <dd>{{ current_version.processing_status }}</dd>
+
+            <dt>Lisibilité</dt>
+            <dd>{{ current_version.readability_status }}</dd>
+
+            <dt>URI de stockage</dt>
+            <dd><code>{{ current_version.storage_uri }}</code></dd>
+        </dl>
+    {% else %}
+        <p>Aucune version courante trouvée.</p>
+    {% endif %}
+
+    <h2>Historique des versions</h2>
+
+    {% if versions %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Version</th>
+                    <th>Courante</th>
+                    <th>Fichier</th>
+                    <th>Type MIME</th>
+                    <th>Taille</th>
+                    <th>Pages</th>
+                    <th>Traitement</th>
+                    <th>Lisibilité</th>
+                    <th>ID</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for version in versions %}
+                    <tr>
+                        <td>{{ version.version_number }}</td>
+                        <td>
+                            {% if version.is_current %}
+                                Oui
+                            {% else %}
+                                Non
+                            {% endif %}
+                        </td>
+                        <td>{{ version.filename }}</td>
+                        <td>{{ version.mime_type|default:"—" }}</td>
+                        <td>{{ version.file_size|default:"—" }}</td>
+                        <td>{{ version.page_count|default:"—" }}</td>
+                        <td>{{ version.processing_status }}</td>
+                        <td>{{ version.readability_status }}</td>
+                        <td><code>{{ version.id }}</code></td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>Aucune version enregistrée.</p>
+    {% endif %}
+{% endblock %}
