@@ -1,4 +1,5 @@
 import os
+from uuid import uuid4
 
 os.environ.setdefault(
     "DJANGO_SETTINGS_MODULE",
@@ -10,24 +11,54 @@ import django
 django.setup()
 
 import httpx
+import pytest
+from django.http import Http404
+from django.test import override_settings
 
 from kaliok.ui.core_ui import views
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(
+        self,
+        payload=None,
+        *,
+        status_code=200,
+        json_error=None,
+    ):
         self.payload = payload
+        self.status_code = status_code
+        self.json_error = json_error
 
     def raise_for_status(self):
-        return None
+        if self.status_code >= 400:
+            request = httpx.Request(
+                "GET",
+                "http://api-test",
+            )
+            response = httpx.Response(
+                self.status_code,
+                request=request,
+            )
+            raise httpx.HTTPStatusError(
+                "Erreur HTTP",
+                request=request,
+                response=response,
+            )
 
     def json(self):
+        if self.json_error is not None:
+            raise self.json_error
+
         return self.payload
 
 
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
 def test_get_api_status_available(monkeypatch):
     def fake_get(url, timeout):
-        assert url == "http://127.0.0.1:8010/health"
+        assert url == "http://api-test:9123/health"
         assert timeout == 2.0
 
         return FakeResponse(
@@ -51,9 +82,14 @@ def test_get_api_status_available(monkeypatch):
     }
 
 
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
 def test_get_api_status_unavailable(monkeypatch):
     def fake_get(url, timeout):
-        raise httpx.ConnectError("API indisponible")
+        raise httpx.ConnectError(
+            "API indisponible"
+        )
 
     monkeypatch.setattr(
         views.httpx,
@@ -67,3 +103,101 @@ def test_get_api_status_unavailable(monkeypatch):
         "status": "error",
         "service": "kaliok-api",
     }
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
+def test_get_api_document_available(monkeypatch):
+    document_id = uuid4()
+
+    payload = {
+        "id": str(document_id),
+        "title": "Document de test",
+        "current_version": None,
+        "versions": [],
+    }
+
+    def fake_get(url, timeout):
+        assert url == (
+            "http://api-test:9123"
+            f"/documents/{document_id}"
+        )
+        assert timeout == 5.0
+
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        fake_get,
+    )
+
+    result = views.get_api_document(
+        document_id
+    )
+
+    assert result == payload
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
+def test_get_api_document_404(monkeypatch):
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        lambda url, timeout: FakeResponse(
+            status_code=404
+        ),
+    )
+
+    with pytest.raises(Http404):
+        views.get_api_document(
+            uuid4()
+        )
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
+def test_get_api_document_connection_error(
+    monkeypatch,
+):
+    def fake_get(url, timeout):
+        raise httpx.ConnectError(
+            "API indisponible"
+        )
+
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        fake_get,
+    )
+
+    assert (
+        views.get_api_document(uuid4())
+        is None
+    )
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://api-test:9123",
+)
+def test_get_api_document_invalid_json(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        lambda url, timeout: FakeResponse(
+            json_error=ValueError(
+                "JSON invalide"
+            )
+        ),
+    )
+
+    assert (
+        views.get_api_document(uuid4())
+        is None
+    )

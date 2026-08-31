@@ -14,6 +14,7 @@ import os
 
 from kaliok.paths import PROJECT_ROOT
 
+KALIOK_API_BASE_URL = os.environ["KALIOK_API_BASE_URL"].rstrip("/")
 
 # Build paths inside the project.
 BASE_DIR = PROJECT_ROOT / "src" / "kaliok" / "ui"
