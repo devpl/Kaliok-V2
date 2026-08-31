@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from kaliok.api.documents import router as documents_router
+from kaliok.api.ingestion import router as ingestion_router
 
 
 app = FastAPI(
@@ -9,6 +10,7 @@ app = FastAPI(
 )
 
 app.include_router(documents_router)
+app.include_router(ingestion_router)
 
 
 @app.get("/health")

@@ -11,10 +11,18 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+from pathlib import Path
 
 from kaliok.paths import PROJECT_ROOT
 
 KALIOK_API_BASE_URL = os.environ["KALIOK_API_BASE_URL"].rstrip("/")
+
+KALIOK_UPLOAD_DIR = Path(
+    os.environ.get(
+        "KALIOK_UPLOAD_DIR",
+        str(PROJECT_ROOT / ".data" / "uploads"),
+    )
+)
 
 # Build paths inside the project.
 BASE_DIR = PROJECT_ROOT / "src" / "kaliok" / "ui"

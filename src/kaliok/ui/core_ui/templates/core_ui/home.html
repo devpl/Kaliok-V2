@@ -4,6 +4,7 @@
 
 {% block content %}
     <h1>Documents</h1>
+
     <p>
         API technique :
         {% if api_status.status == "ok" %}
@@ -12,38 +13,57 @@
             <strong>indisponible</strong>
         {% endif %}
     </p>
-    {% if documents %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Titre</th>
-                    <th>Famille</th>
-                    <th>Langue</th>
-                    <th>Statut</th>
-                    <th>Créé le</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for document in documents %}
+
+    <section>
+        <h2>Ajouter un document</h2>
+
+        <form
+            method="post"
+            action="{% url 'upload_document' %}"
+            enctype="multipart/form-data"
+        >
+            {% csrf_token %}
+            {{ upload_form.as_p }}
+            <button type="submit">Importer</button>
+        </form>
+    </section>
+
+    <section>
+        <h2>Documents enregistrés</h2>
+
+        {% if documents %}
+            <table>
+                <thead>
                     <tr>
-                        <td>
-                            <a href="{% url 'document_detail' document.id %}">
-                                {% if document.title %}
-                                    {{ document.title }}
-                                {% else %}
-                                    {{ document.id }}
-                                {% endif %}
-                            </a>
-                        </td>
-                        <td>{{ document.document_family|default:"—" }}</td>
-                        <td>{{ document.language|default:"—" }}</td>
-                        <td>{{ document.status }}</td>
-                        <td>{{ document.created_at }}</td>
+                        <th>Titre</th>
+                        <th>Famille</th>
+                        <th>Langue</th>
+                        <th>Statut</th>
+                        <th>Créé le</th>
                     </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    {% else %}
-        <p>Aucun document enregistré.</p>
-    {% endif %}
+                </thead>
+                <tbody>
+                    {% for document in documents %}
+                        <tr>
+                            <td>
+                                <a href="{% url 'document_detail' document.id %}">
+                                    {% if document.title %}
+                                        {{ document.title }}
+                                    {% else %}
+                                        {{ document.id }}
+                                    {% endif %}
+                                </a>
+                            </td>
+                            <td>{{ document.document_family|default:"—" }}</td>
+                            <td>{{ document.language|default:"—" }}</td>
+                            <td>{{ document.status }}</td>
+                            <td>{{ document.created_at }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p>Aucun document enregistré.</p>
+        {% endif %}
+    </section>
 {% endblock %}

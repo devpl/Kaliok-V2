@@ -248,3 +248,90 @@ def test_get_api_documents_unavailable(monkeypatch):
     )
 
     assert views.get_api_documents() is None
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://kaliok-api-test.invalid",
+)
+def test_ingest_api_document_available(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "document.txt"
+    path.write_text(
+        "Document de test.",
+        encoding="utf-8",
+    )
+
+    document_id = uuid4()
+    version_id = uuid4()
+
+    payload = {
+        "document_id": str(document_id),
+        "document_version_id": str(version_id),
+        "status": "created",
+        "source_type": "plain_text",
+        "media_type": "text/plain",
+    }
+
+    def fake_post(url, json, timeout):
+        assert url == (
+            "http://kaliok-api-test.invalid/ingestion"
+        )
+        assert timeout == 30.0
+        assert json == {
+            "source": {
+                "name": "document.txt",
+                "uri": path.resolve().as_uri(),
+                "media_type": "text/plain",
+                "size": path.stat().st_size,
+            }
+        }
+
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(
+        views.httpx,
+        "post",
+        fake_post,
+    )
+
+    result = views.ingest_api_document(
+        path=path,
+        original_name="document.txt",
+        size=path.stat().st_size,
+    )
+
+    assert result == payload
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://kaliok-api-test.invalid",
+)
+def test_ingest_api_document_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "document.txt"
+    path.write_text(
+        "Document de test.",
+        encoding="utf-8",
+    )
+
+    def fake_post(url, json, timeout):
+        raise httpx.ConnectError(
+            "API indisponible"
+        )
+
+    monkeypatch.setattr(
+        views.httpx,
+        "post",
+        fake_post,
+    )
+
+    result = views.ingest_api_document(
+        path=path,
+        original_name="document.txt",
+        size=path.stat().st_size,
+    )
+
+    assert result is None
