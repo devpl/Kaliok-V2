@@ -13,3 +13,4 @@ benchmark_embed_timing.txt
 
 # Base SQLite locale Django
 db.sqlite3
+.tmp/

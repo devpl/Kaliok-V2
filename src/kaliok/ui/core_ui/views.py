@@ -4,13 +4,6 @@ import httpx
 from django.conf import settings
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
-from sqlmodel import Session, select
-
-from kaliok.storage.database import create_database_engine
-from kaliok.storage.models import Document
-
-
-engine = create_database_engine()
 
 
 def get_api_status() -> dict[str, str]:
@@ -26,6 +19,27 @@ def get_api_status() -> dict[str, str]:
             "status": "error",
             "service": "kaliok-api",
         }
+
+
+def get_api_documents() -> list[dict] | None:
+    try:
+        response = httpx.get(
+            f"{settings.KALIOK_API_BASE_URL}/documents",
+            timeout=5.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+
+    if not isinstance(payload, list):
+        return None
+
+    return payload
 
 
 def get_api_document(document_id: UUID) -> dict | None:
@@ -57,10 +71,10 @@ def get_api_document(document_id: UUID) -> dict | None:
 
 
 def home(request):
-    with Session(engine) as session:
-        documents = session.exec(
-            select(Document).order_by(Document.created_at.desc())
-        ).all()
+    documents = get_api_documents()
+
+    if documents is None:
+        documents = []
 
     return render(
         request,

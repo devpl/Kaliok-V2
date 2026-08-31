@@ -16,25 +16,38 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, *, document=None, versions=None):
+    def __init__(
+        self,
+        *,
+        document=None,
+        documents=None,
+        versions=None,
+    ):
         self.document = document
+        self.documents = list(documents or [])
         self.versions = list(versions or [])
+        self.exec_calls = 0
 
     def get(self, model, object_id):
         return self.document
 
     def exec(self, statement):
+        self.exec_calls += 1
+
+        if self.document is None:
+            return FakeResult(self.documents)
+
         return FakeResult(self.versions)
 
 
 class FakeDocument:
-    def __init__(self):
+    def __init__(self, title="Document de test"):
         now = datetime.now(timezone.utc)
 
         self.id = uuid4()
         self.source_id = None
         self.external_id = "external-test"
-        self.title = "Document de test"
+        self.title = title
         self.document_family = "test"
         self.status = "active"
         self.language = "fr"
@@ -72,6 +85,37 @@ class FakeVersion:
 
 
 client = TestClient(app)
+
+
+def test_list_documents():
+    document_1 = FakeDocument(
+        title="Document 1"
+    )
+    document_2 = FakeDocument(
+        title="Document 2"
+    )
+
+    fake_session = FakeSession(
+        documents=[
+            document_2,
+            document_1,
+        ]
+    )
+
+    app.dependency_overrides[get_session] = lambda: fake_session
+
+    try:
+        response = client.get("/documents")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+
+    payload = response.json()
+
+    assert len(payload) == 2
+    assert payload[0]["title"] == "Document 2"
+    assert payload[1]["title"] == "Document 1"
 
 
 def test_get_document():

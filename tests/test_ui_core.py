@@ -1,6 +1,4 @@
 import os
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from uuid import uuid4
 
 os.environ.setdefault(
@@ -17,42 +15,6 @@ from django.test import Client, override_settings
 from django.urls import reverse
 
 from kaliok.ui.core_ui import views
-
-
-class FakeResult:
-    def __init__(self, values):
-        self.values = values
-
-    def all(self):
-        return self.values
-
-
-class FakeSession:
-    def __init__(self, *, query_results=None):
-        self.query_results = list(query_results or [])
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-    def exec(self, statement):
-        values = self.query_results.pop(0)
-        return FakeResult(values)
-
-
-def make_document():
-    now = datetime.now(timezone.utc)
-
-    return SimpleNamespace(
-        id=uuid4(),
-        title="Document de test",
-        status="active",
-        document_family=None,
-        language="fr",
-        created_at=now,
-    )
 
 
 def make_api_document(document_id):
@@ -127,14 +89,20 @@ def make_api_document(document_id):
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 def test_home_page_responds(monkeypatch):
-    fake_session = FakeSession(
-        query_results=[[]],
-    )
-
     monkeypatch.setattr(
         views,
-        "Session",
-        lambda engine: fake_session,
+        "get_api_documents",
+        lambda: [
+            {
+                "id": str(uuid4()),
+                "title": "Document liste test",
+                "status": "active",
+                "document_family": None,
+                "language": "fr",
+                "created_at": "2026-08-31T09:00:00+00:00",
+                "updated_at": "2026-08-31T09:00:00+00:00",
+            }
+        ],
     )
 
     monkeypatch.setattr(
@@ -154,8 +122,36 @@ def test_home_page_responds(monkeypatch):
 
     assert response.status_code == 200
     assert b"Documents" in response.content
+    assert b"Document liste test" in response.content
     assert b"API technique" in response.content
     assert b"disponible" in response.content
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+def test_home_page_handles_unavailable_api(monkeypatch):
+    monkeypatch.setattr(
+        views,
+        "get_api_documents",
+        lambda: None,
+    )
+
+    monkeypatch.setattr(
+        views,
+        "get_api_status",
+        lambda: {
+            "status": "error",
+            "service": "kaliok-api",
+        },
+    )
+
+    client = Client()
+
+    response = client.get(
+        reverse("home")
+    )
+
+    assert response.status_code == 200
+    assert b"indisponible" in response.content
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

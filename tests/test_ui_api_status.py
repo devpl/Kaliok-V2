@@ -201,3 +201,50 @@ def test_get_api_document_invalid_json(
         views.get_api_document(uuid4())
         is None
     )
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://kaliok-api-test.invalid",
+)
+def test_get_api_documents_available(monkeypatch):
+    payload = [
+        {
+            "id": str(uuid4()),
+            "title": "Document 1",
+        }
+    ]
+
+    def fake_get(url, timeout):
+        assert url == (
+            "http://kaliok-api-test.invalid/documents"
+        )
+        assert timeout == 5.0
+
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        fake_get,
+    )
+
+    result = views.get_api_documents()
+
+    assert result == payload
+
+
+@override_settings(
+    KALIOK_API_BASE_URL="http://kaliok-api-test.invalid",
+)
+def test_get_api_documents_unavailable(monkeypatch):
+    def fake_get(url, timeout):
+        raise httpx.ConnectError(
+            "API indisponible"
+        )
+
+    monkeypatch.setattr(
+        views.httpx,
+        "get",
+        fake_get,
+    )
+
+    assert views.get_api_documents() is None

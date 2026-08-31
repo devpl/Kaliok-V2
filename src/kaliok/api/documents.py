@@ -40,6 +40,18 @@ class DocumentVersionResponse(BaseModel):
     processed_at: datetime | None
 
 
+class DocumentSummaryResponse(BaseModel):
+    id: UUID
+
+    title: str | None
+    document_family: str | None
+    status: str
+    language: str | None
+
+    created_at: datetime
+    updated_at: datetime
+
+
 class DocumentDetailResponse(BaseModel):
     id: UUID
 
@@ -56,6 +68,26 @@ class DocumentDetailResponse(BaseModel):
 
     current_version: DocumentVersionResponse | None
     versions: list[DocumentVersionResponse]
+
+
+@router.get(
+    "",
+    response_model=list[DocumentSummaryResponse],
+)
+def list_documents(
+    session: Session = Depends(get_session),
+):
+    documents = session.exec(
+        select(Document).order_by(Document.created_at.desc())
+    ).all()
+
+    return [
+        DocumentSummaryResponse.model_validate(
+            document,
+            from_attributes=True,
+        )
+        for document in documents
+    ]
 
 
 @router.get(
