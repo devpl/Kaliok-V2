@@ -14,6 +14,8 @@ from kaliok.pipeline.production import build_current_production_manifest
 from kaliok.pipeline.real_registry import build_kaliok_component_registry
 from kaliok.pipeline.runtime import (
     ComponentRuntimeRegistry,
+    DocumentPipelineExecutionResult,
+    KaliokPerceptionAdapter,
     KaliokNormalizationAdapter,
     ManifestExecutionResult,
     ManifestExecutionService,
@@ -30,6 +32,8 @@ __all__ = [
     "PipelineManifestComparator",
     "compare_manifests",
     "ComponentRuntimeRegistry",
+    "DocumentPipelineExecutionResult",
+    "KaliokPerceptionAdapter",
     "KaliokNormalizationAdapter",
     "ManifestExecutionResult",
     "ManifestExecutionService",

@@ -8,7 +8,12 @@ from sqlmodel import Session, select
 
 from kaliok.execution import ExecutionContext
 from kaliok.hashing import canonical_json_hash
-from kaliok.indexing.service import PERCEPTION_ENGINE, PERCEPTION_VERSION
+from kaliok.documents.models import DocumentContent, DocumentPage, TextBlock
+from kaliok.indexing.service import (
+    PERCEPTION_ENGINE,
+    PERCEPTION_VERSION,
+    store_document_perception,
+)
 from kaliok.normalization import ContentNormalizationService
 from kaliok.pipeline import (
     ComponentBinding,
@@ -57,6 +62,7 @@ def _document_version(session: Session) -> DocumentVersion:
         filename="pipeline-runtime.pdf",
         file_hash=uuid4().hex,
         storage_uri="test://pipeline-runtime.pdf",
+        page_count=1,
     )
     session.add(version)
     session.flush()
@@ -106,6 +112,45 @@ def _normalization_manifest(*, pipeline_key: str = "pipeline-a") -> PipelineMani
                 capabilities=("normalization",),
             ),
         ),
+    )
+
+
+def _document_pipeline_manifest() -> PipelineManifest:
+    return PipelineManifest(
+        pipeline_key="pipeline-a",
+        revision="1",
+        bindings=(
+            ComponentBinding(
+                binding_key="perception",
+                component_key=PERCEPTION_ENGINE,
+                component_version=PERCEPTION_VERSION,
+                capabilities=("document_extraction",),
+            ),
+            ComponentBinding(
+                binding_key="normalization",
+                component_key="kaliok-normalizer",
+                component_version="block-to-unit-v1",
+                capabilities=("normalization",),
+                dependencies=("perception",),
+            ),
+        ),
+    )
+
+
+def _mock_document_content() -> DocumentContent:
+    return DocumentContent(
+        source="runtime-fixture",
+        page_count=1,
+        pages=[DocumentPage(page=1, perception_mode="native")],
+        blocks=[
+            TextBlock(
+                text="Perception A",
+                page=1,
+                block_type="paragraph",
+                reading_order=0,
+                extraction_method="synthetic-boundary",
+            ),
+        ],
     )
 
 
@@ -205,6 +250,157 @@ def test_manifest_runtime_executes_real_normalization_adapter_and_traces_snapsho
     assert page_after is not None and page_after.perception_processing_run_id == perception.id
 
 
+def test_manifest_pipeline_chains_real_perception_to_normalization_without_promotion(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    production_perception, page, production_block = _perception(session, version)
+    manifest = _document_pipeline_manifest()
+    context = ExecutionContext(environment="experiment", execution_group_id=uuid4())
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+    session.commit = lambda: (_ for _ in ()).throw(AssertionError("commit interdit"))
+
+    result = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    ).execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=context,
+    )
+    perception_run = session.get(
+        ProcessingRun,
+        result.perception.processing_run_id,
+    )
+    normalization_run = session.get(
+        ProcessingRun,
+        result.normalization.processing_run_id,
+    )
+    perception_blocks = session.exec(
+        select(ContentBlock).where(
+            ContentBlock.processing_run_id == result.perception.processing_run_id
+        )
+    ).all()
+    normalized_units = session.exec(
+        select(NormalizedContentUnit).where(
+            NormalizedContentUnit.processing_run_id
+            == result.normalization.processing_run_id
+        )
+    ).all()
+    source = session.exec(
+        select(NormalizedContentUnitSource).where(
+            NormalizedContentUnitSource.normalized_content_unit_id
+            == normalized_units[0].id
+        )
+    ).one()
+
+    assert result.perception.processing_run_id != result.normalization.processing_run_id
+    assert perception_run is not None and normalization_run is not None
+    assert perception_run.process_type == "document_extraction"
+    assert normalization_run.process_type == "content_normalization"
+    assert perception_run.execution_environment == "experiment"
+    assert normalization_run.execution_environment == "experiment"
+    assert perception_run.execution_group_id == context.execution_group_id
+    assert normalization_run.execution_group_id == context.execution_group_id
+    assert perception_run.configuration["pipeline"]["manifest_hash"] == manifest.manifest_hash
+    assert normalization_run.configuration["pipeline"]["manifest_hash"] == manifest.manifest_hash
+    assert perception_run.configuration_hash == canonical_json_hash(perception_run.configuration)
+    assert normalization_run.configuration_hash == canonical_json_hash(normalization_run.configuration)
+    assert perception_run.configuration["pipeline"]["binding_key"] == "perception"
+    assert normalization_run.configuration["pipeline"]["binding_key"] == "normalization"
+    assert perception_run.configuration["pipeline"]["capability"] == "document_extraction"
+    assert normalization_run.configuration["pipeline"]["capability"] == "normalization"
+    assert perception_run.configuration["pipeline"]["component_key"] == PERCEPTION_ENGINE
+    assert normalization_run.configuration["pipeline"]["component_key"] == "kaliok-normalizer"
+    assert len(perception_blocks) == 1
+    assert perception_blocks[0].content == "Perception A"
+    assert perception_blocks[0].processing_run_id == perception_run.id
+    assert len(normalized_units) == 1
+    assert normalized_units[0].content == perception_blocks[0].content
+    assert source.content_block_id == perception_blocks[0].id
+    assert source.content_block_id != production_block.id
+    page_after = session.get(Page, page.id)
+    assert page_after is not None
+    assert page_after.perception_processing_run_id == production_perception.id
+
+
+def test_document_perception_default_still_promotes_current_pointer(session: Session):
+    version = _document_version(session)
+    content = _mock_document_content()
+
+    run = store_document_perception(session, version, content)
+
+    pages = session.exec(
+        select(Page).where(Page.document_version_id == version.id)
+    ).all()
+    assert len(pages) == 1
+    assert pages[0].perception_processing_run_id == run.id
+
+
+def test_manifest_pipeline_rejects_incompatible_perception_source(session: Session):
+    version = _document_version(session)
+    other_version = _document_version(session)
+    other_perception, _, _ = _perception(session, other_version)
+    manifest = _normalization_manifest()
+    runner = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    )
+
+    with pytest.raises(ValueError, match="autre DocumentVersion"):
+        runner.execute_normalization(
+            session,
+            manifest=manifest,
+            document_version_id=version.id,
+            perception_processing_run_id=other_perception.id,
+            execution_context=ExecutionContext(environment="experiment"),
+        )
+
+
+def test_manifest_pipeline_rollback_removes_both_stages_and_artifacts(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    _, page, _ = _perception(session, version)
+    manifest = _document_pipeline_manifest()
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+    runner = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    )
+    before = {
+        "runs": session.exec(select(ProcessingRun)).all(),
+        "blocks": session.exec(select(ContentBlock)).all(),
+        "units": session.exec(select(NormalizedContentUnit)).all(),
+        "sources": session.exec(select(NormalizedContentUnitSource)).all(),
+    }
+    savepoint = session.begin_nested()
+
+    runner.execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=ExecutionContext(environment="experiment"),
+    )
+    savepoint.rollback()
+
+    assert session.exec(select(ProcessingRun)).all() == before["runs"]
+    assert session.exec(select(ContentBlock)).all() == before["blocks"]
+    assert session.exec(select(NormalizedContentUnit)).all() == before["units"]
+    assert session.exec(select(NormalizedContentUnitSource)).all() == before["sources"]
+    page_after = session.get(Page, page.id)
+    assert page_after is not None
+
+
 def test_same_manifest_repeats_with_distinct_groups_and_artifacts(session: Session):
     version = _document_version(session)
     perception, _, _ = _perception(session, version)
@@ -252,6 +448,86 @@ def test_same_manifest_repeats_with_distinct_groups_and_artifacts(session: Sessi
         )
     ).one()
     assert first_unit.id != second_unit.id
+
+
+def test_same_manifest_repeats_full_pipeline_with_distinct_perceptions(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    production_perception, page, production_block = _perception(session, version)
+    manifest = _document_pipeline_manifest()
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+    runner = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    )
+    first_group_id = uuid4()
+    second_group_id = uuid4()
+    first = runner.execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=ExecutionContext(
+            environment="experiment",
+            execution_group_id=first_group_id,
+        ),
+    )
+    second = runner.execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=ExecutionContext(
+            environment="experiment",
+            execution_group_id=second_group_id,
+        ),
+    )
+    first_perception_run = session.get(ProcessingRun, first.perception.processing_run_id)
+    second_perception_run = session.get(ProcessingRun, second.perception.processing_run_id)
+
+    first_perception_blocks = session.exec(
+        select(ContentBlock).where(
+            ContentBlock.processing_run_id == first.perception.processing_run_id
+        )
+    ).all()
+    second_perception_blocks = session.exec(
+        select(ContentBlock).where(
+            ContentBlock.processing_run_id == second.perception.processing_run_id
+        )
+    ).all()
+    first_units = session.exec(
+        select(NormalizedContentUnit).where(
+            NormalizedContentUnit.processing_run_id
+            == first.normalization.processing_run_id
+        )
+    ).all()
+    second_units = session.exec(
+        select(NormalizedContentUnit).where(
+            NormalizedContentUnit.processing_run_id
+            == second.normalization.processing_run_id
+        )
+    ).all()
+    page_after = session.get(Page, page.id)
+
+    assert first.perception.manifest_hash == second.perception.manifest_hash
+    assert first.normalization.manifest_hash == second.normalization.manifest_hash
+    assert first.perception.processing_run_id != second.perception.processing_run_id
+    assert first.normalization.processing_run_id != second.normalization.processing_run_id
+    assert first_perception_run is not None and second_perception_run is not None
+    assert first_perception_run.execution_group_id == first_group_id
+    assert second_perception_run.execution_group_id == second_group_id
+    assert first_perception_run.execution_group_id != second_perception_run.execution_group_id
+    assert first_perception_blocks[0].id != second_perception_blocks[0].id
+    assert first_units[0].id != second_units[0].id
+    assert first_units[0].source_unit_id == str(first_perception_blocks[0].id)
+    assert second_units[0].source_unit_id == str(second_perception_blocks[0].id)
+    assert first_perception_blocks[0].id != production_block.id
+    assert second_perception_blocks[0].id != production_block.id
+    assert page_after is not None
+    assert page_after.perception_processing_run_id == production_perception.id
 
 
 def test_runtime_resolves_one_multi_capability_binding_for_each_capability():

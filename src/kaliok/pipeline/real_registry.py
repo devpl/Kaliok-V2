@@ -1,8 +1,17 @@
 """Fact-based registry of the replaceable Kaliok components currently present."""
 
-from kaliok.indexing.service import PERCEPTION_ENGINE, PERCEPTION_VERSION
+from kaliok.indexing.service import (
+    CHUNKING_STRATEGY,
+    CHUNKING_VERSION,
+    PERCEPTION_ENGINE,
+    PERCEPTION_VERSION,
+)
 from kaliok.normalization.service import ENGINE_VERSION
 from kaliok.pipeline.components import ComponentDefinition, ComponentRegistry
+from kaliok.rag_runtime.postgres import (
+    NORMALIZED_CHUNKING_STRATEGY,
+    NORMALIZED_CHUNKING_VERSION,
+)
 
 
 def build_kaliok_component_registry() -> ComponentRegistry:
@@ -49,7 +58,7 @@ def build_kaliok_component_registry() -> ComponentRegistry:
             ),
             ComponentDefinition(
                 component_key="kaliok-semantic-chunker",
-                version="llamaindex-semantic-cleaning-v1",
+                version=f"{CHUNKING_STRATEGY}@{CHUNKING_VERSION}",
                 provides=("chunking",),
                 metadata={
                     "source": "kaliok.indexing.service.CHUNKING_STRATEGY",
@@ -58,7 +67,10 @@ def build_kaliok_component_registry() -> ComponentRegistry:
             ),
             ComponentDefinition(
                 component_key="postgres-normalized-index",
-                version="normalized-content-unit-v1",
+                version=(
+                    f"{NORMALIZED_CHUNKING_STRATEGY}@"
+                    f"{NORMALIZED_CHUNKING_VERSION}"
+                ),
                 provides=("indexing",),
                 metadata={
                     "implementation": "kaliok.rag_runtime.postgres.PostgresVectorIndexStore",

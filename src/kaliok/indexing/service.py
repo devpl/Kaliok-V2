@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from sqlmodel import Session, select
 
 from kaliok.execution import ExecutionContext, apply_execution_context
 from kaliok.documents.cleaning import clean_document
+from kaliok.documents.models import DocumentContent
 from kaliok.documents.reader import read_document
 from kaliok.documents.semantic_chunking import (
     chunk_document_semantically,
@@ -18,7 +20,7 @@ from kaliok.embeddings.ollama import (
     EMBEDDING_MODEL,
     embed_texts,
 )
-from kaliok.hashing import calculate_sha256
+from kaliok.hashing import calculate_sha256, canonical_json_hash
 from kaliok.normalization import ContentNormalizationService
 from kaliok.paths import TEST_DOCUMENTS
 from kaliok.storage.database import create_database_engine
@@ -581,11 +583,71 @@ def _enrich_existing_page_metadata(
     )
 
 
+def store_document_perception(
+    session: Session,
+    version: DocumentVersion,
+    document_content: DocumentContent,
+    *,
+    execution_context: ExecutionContext | None = None,
+    activate_as_current: bool = True,
+    pipeline_metadata: Mapping[str, object] | None = None,
+) -> ProcessingRun:
+    """Persist one perception generation, optionally promoting it as current.
+
+    Production keeps the historical default (promotion enabled). The
+    manifest-driven experiment path disables promotion and attaches its
+    manifest snapshot to the resulting ProcessingRun.
+    """
+    if version.page_count is None:
+        raise ValueError("DocumentVersion.page_count doit être défini.")
+    snapshot: dict[str, object] | None = None
+    if pipeline_metadata is not None:
+        snapshot = dict(pipeline_metadata)
+        try:
+            canonical_json_hash(snapshot)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Les métadonnées pipeline doivent être sérialisables en JSON."
+            ) from error
+    stored_pages = session.exec(
+        select(Page).where(Page.document_version_id == version.id)
+    ).all()
+    if stored_pages:
+        if len(stored_pages) != version.page_count:
+            raise RuntimeError(
+                "Perception impossible : le nombre de pages stockées ne "
+                "correspond pas au document."
+            )
+        run, _ = _store_new_perception_on_existing_pages(
+            session,
+            version,
+            document_content,
+            execution_context,
+            activate_as_current=activate_as_current,
+        )
+    else:
+        run, _ = _store_perception(
+            session,
+            version,
+            document_content,
+            execution_context,
+            activate_as_current=activate_as_current,
+        )
+    if snapshot is not None:
+        run.configuration = {"pipeline": snapshot}
+        run.configuration_hash = canonical_json_hash(run.configuration)
+        session.add(run)
+        session.flush()
+    return run
+
+
 def _store_perception(
     session: Session,
     version: DocumentVersion,
     document_content,
     execution_context: ExecutionContext | None = None,
+    *,
+    activate_as_current: bool = True,
 ) -> tuple[
     ProcessingRun,
     dict[int, ContentBlock],
@@ -646,9 +708,8 @@ def _store_perception(
             document_page,
             processing_run.id,
         )
-        stored_page.perception_processing_run_id = (
-            processing_run.id
-        )
+        if activate_as_current:
+            stored_page.perception_processing_run_id = processing_run.id
 
         session.add(stored_page)
         session.flush()
@@ -721,6 +782,8 @@ def _store_new_perception_on_existing_pages(
     version: DocumentVersion,
     document_content,
     execution_context: ExecutionContext | None = None,
+    *,
+    activate_as_current: bool = True,
 ) -> tuple[
     ProcessingRun,
     dict[int, ContentBlock],
@@ -786,15 +849,14 @@ def _store_new_perception_on_existing_pages(
                 f"page {page_number} introuvable."
             )
 
-        _apply_document_page_to_storage(
-            stored_page,
-            document_page,
-            processing_run.id,
-        )
-        stored_page.perception_processing_run_id = (
-            processing_run.id
-        )
-        session.add(stored_page)
+        if activate_as_current:
+            _apply_document_page_to_storage(
+                stored_page,
+                document_page,
+                processing_run.id,
+            )
+            stored_page.perception_processing_run_id = processing_run.id
+            session.add(stored_page)
 
         for reading_order, (
             source_block_index,
