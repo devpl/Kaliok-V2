@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from kaliok.execution import ExecutionContext, apply_execution_context
+from kaliok.hashing import canonical_json_hash
 from kaliok.storage.models import (
     ContentBlock,
     DocumentVersion,
@@ -21,6 +22,7 @@ from kaliok.storage.models import (
 PROCESS_TYPE = "content_normalization"
 ENGINE = "kaliok"
 ENGINE_VERSION = "block-to-unit-v1"
+PERCEPTION_PROCESS_TYPE = "document_extraction"
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ class ContentNormalizationResult:
 
 
 class ContentNormalizationService:
-    """Create one normalized unit for each non-empty current content block."""
+    """Create one normalized unit for each non-empty source content block."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -40,11 +42,28 @@ class ContentNormalizationService:
         self,
         document_version_id: UUID,
         *,
+        perception_processing_run_id: UUID | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> ContentNormalizationResult:
         version = self._session.get(DocumentVersion, document_version_id)
         if version is None:
             raise ValueError(f"DocumentVersion inconnue : {document_version_id}.")
+
+        source_blocks: list[ContentBlock] | None = None
+        configuration: dict[str, object] = {
+            "normalization_strategy": "block-to-unit",
+            "normalization_version": ENGINE_VERSION,
+        }
+        if perception_processing_run_id is not None:
+            source_blocks = self._perception_blocks(
+                version.id,
+                perception_processing_run_id,
+            )
+            configuration["perception_processing_run_id"] = str(
+                perception_processing_run_id
+            )
+        if execution_context is not None:
+            configuration["execution_environment"] = execution_context.environment
 
         run = ProcessingRun(
             document_version_id=version.id,
@@ -52,8 +71,11 @@ class ContentNormalizationService:
             status="running",
             engine=ENGINE,
             engine_version=ENGINE_VERSION,
+            configuration=configuration,
         )
         apply_execution_context(self._session, run, execution_context)
+        if execution_context is None:
+            run.configuration_hash = canonical_json_hash(run.configuration)
         self._session.add(run)
         self._session.flush()
 
@@ -64,7 +86,11 @@ class ContentNormalizationService:
         }
 
         try:
-            blocks = self._current_blocks(version.id)
+            blocks = (
+                source_blocks
+                if source_blocks is not None
+                else self._current_blocks(version.id)
+            )
             skipped_empty_count = sum(not block.content.strip() for block in blocks)
             usable_blocks = [block for block in blocks if block.content.strip()]
             metrics = {
@@ -74,7 +100,7 @@ class ContentNormalizationService:
             }
             if not usable_blocks:
                 raise ValueError(
-                    "Aucun ContentBlock exploitable dans la perception courante "
+                    "Aucun ContentBlock exploitable dans la perception sélectionnée "
                     f"de la DocumentVersion {version.id}."
                 )
 
@@ -107,6 +133,59 @@ class ContentNormalizationService:
             document_version_id=version.id,
             unit_count=len(usable_blocks),
         )
+
+    def _perception_blocks(
+        self,
+        version_id: UUID,
+        perception_processing_run_id: UUID,
+    ) -> list[ContentBlock]:
+        perception_run = self._session.get(
+            ProcessingRun,
+            perception_processing_run_id,
+        )
+        if perception_run is None:
+            raise ValueError(
+                "ProcessingRun de perception inconnu : "
+                f"{perception_processing_run_id}."
+            )
+        if perception_run.process_type != PERCEPTION_PROCESS_TYPE:
+            raise ValueError(
+                "Le run fourni n'est pas un run de perception "
+                f"{PERCEPTION_PROCESS_TYPE}."
+            )
+        if perception_run.status != "completed":
+            raise ValueError("Le run de perception doit être completed.")
+        if perception_run.document_version_id != version_id:
+            raise ValueError(
+                "Le run de perception appartient à une autre DocumentVersion."
+            )
+
+        reading_order = func.coalesce(
+            ContentBlock.reading_order,
+            ContentBlock.block_index,
+        )
+        blocks = list(
+            self._session.exec(
+                select(ContentBlock)
+                .join(Page, ContentBlock.page_id == Page.id)
+                .where(
+                    Page.document_version_id == version_id,
+                    ContentBlock.processing_run_id == perception_processing_run_id,
+                )
+                .order_by(
+                    Page.page_number,
+                    reading_order,
+                    ContentBlock.block_index,
+                    ContentBlock.id,
+                )
+            ).all()
+        )
+        if not blocks:
+            raise ValueError(
+                "Aucun ContentBlock associé au run de perception "
+                f"{perception_processing_run_id}."
+            )
+        return blocks
 
     def _current_blocks(self, version_id: UUID) -> list[ContentBlock]:
         reading_order = func.coalesce(
