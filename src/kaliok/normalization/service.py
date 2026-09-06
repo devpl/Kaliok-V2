@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from uuid import UUID
 
 from sqlalchemy import func
@@ -44,6 +45,7 @@ class ContentNormalizationService:
         *,
         perception_processing_run_id: UUID | None = None,
         execution_context: ExecutionContext | None = None,
+        pipeline_metadata: Mapping[str, object] | None = None,
     ) -> ContentNormalizationResult:
         version = self._session.get(DocumentVersion, document_version_id)
         if version is None:
@@ -64,6 +66,15 @@ class ContentNormalizationService:
             )
         if execution_context is not None:
             configuration["execution_environment"] = execution_context.environment
+        if pipeline_metadata is not None:
+            pipeline_snapshot = dict(pipeline_metadata)
+            try:
+                canonical_json_hash(pipeline_snapshot)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "Les métadonnées pipeline doivent être sérialisables en JSON."
+                ) from error
+            configuration["pipeline"] = pipeline_snapshot
 
         run = ProcessingRun(
             document_version_id=version.id,
