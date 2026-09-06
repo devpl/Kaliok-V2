@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from kaliok.execution import ExecutionContext, apply_execution_context
 from kaliok.documents.docling_adapter import (
     document_content_from_docling,
 )
@@ -17,6 +18,7 @@ from kaliok.documents.docling_client import (
 from kaliok.documents.models import DocumentContent
 from kaliok.storage.models import (
     ContentBlock,
+    ContentBlockFragment,
     DocumentVersion,
     Page,
     ProcessingRun,
@@ -36,6 +38,7 @@ def store_pdf_with_docling(
     base_url: str | None = None,
     timeout: float = 300,
     engine_version: str | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> ProcessingRun:
     """Explicitly convert a PDF with Docling, then persist its output."""
     document = convert_pdf_with_docling(
@@ -48,11 +51,18 @@ def store_pdf_with_docling(
         if engine_version is not None
         else document.get("version")
     )
+
+    store_kwargs: dict[str, Any] = {
+        "engine_version": resolved_engine_version,
+    }
+    if execution_context is not None:
+        store_kwargs["execution_context"] = execution_context
+
     return store_docling_document(
         session,
         document_version,
         document,
-        engine_version=resolved_engine_version,
+        **store_kwargs,
     )
 
 
@@ -66,6 +76,7 @@ def store_pdf_with_docling_async(
     poll_interval: float = 2.0,
     overall_timeout: float = 1800,
     engine_version: str | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> ProcessingRun:
     """Explicitly convert through Docling async, then persist the result."""
     document = convert_pdf_with_docling_async(
@@ -80,13 +91,19 @@ def store_pdf_with_docling_async(
         if engine_version is not None
         else document.get("version")
     )
+
+    store_kwargs: dict[str, Any] = {
+        "engine_version": resolved_engine_version,
+    }
+    if execution_context is not None:
+        store_kwargs["execution_context"] = execution_context
+
     return store_docling_document(
         session,
         document_version,
         document,
-        engine_version=resolved_engine_version,
+        **store_kwargs,
     )
-
 
 def store_docling_document(
     session: Session,
@@ -94,6 +111,7 @@ def store_docling_document(
     document: dict[str, Any],
     *,
     engine_version: str | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> ProcessingRun:
     """Persist Docling output as an optional, non-current perception."""
     content = document_content_from_docling(document)
@@ -111,6 +129,7 @@ def store_docling_document(
         content,
         engine_version=engine_version,
         idempotency_key=fingerprint,
+        execution_context=execution_context,
     )
 
 
@@ -121,6 +140,7 @@ def store_docling_perception(
     *,
     engine_version: str | None = None,
     idempotency_key: str | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> ProcessingRun:
     """Store enriched blocks without changing Page's current perception."""
     _validate_page_numbers(document_version, content)
@@ -148,6 +168,7 @@ def store_docling_perception(
             content,
             engine_version=engine_version,
             idempotency_key=idempotency_key,
+            execution_context=execution_context,
         )
 
 
@@ -208,6 +229,7 @@ def _store_docling_perception(
     *,
     engine_version: str | None,
     idempotency_key: str | None,
+    execution_context: ExecutionContext | None,
 ) -> ProcessingRun:
     run = ProcessingRun(
         document_version_id=document_version.id,
@@ -221,6 +243,7 @@ def _store_docling_perception(
         },
         metrics={"block_count": len(content.blocks)},
     )
+    apply_execution_context(session, run, execution_context)
     session.add(run)
     session.flush()
 
@@ -291,6 +314,20 @@ def _store_docling_perception(
         )
         session.add(stored)
         session.flush()
+        session.add(
+            ContentBlockFragment(
+                content_block_id=stored.id,
+                page_id=stored.page_id,
+                fragment_index=0,
+                reading_order=stored.reading_order,
+                content=stored.content,
+                bbox_x=stored.bbox_x,
+                bbox_y=stored.bbox_y,
+                bbox_width=stored.bbox_width,
+                bbox_height=stored.bbox_height,
+                coordinate_system=stored.coordinate_system,
+            )
+        )
         if block.self_ref is not None:
             stored_by_ref[block.self_ref] = stored
         stored_pairs.append((stored, block.parent_ref))

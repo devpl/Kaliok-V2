@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from sqlmodel import Session, select
 
 from kaliok.ingestion import (
     DetectedSource,
@@ -19,6 +20,15 @@ from kaliok.ingestion.ingestors import (
     TxtSourceIngestor,
 )
 from kaliok.ingestion.stores import PostgresDocumentStore
+from kaliok.storage.database import create_database_engine
+from kaliok.storage.models import (
+    ContentBlock,
+    ContentBlockFragment,
+    NormalizedContentUnit,
+    NormalizedContentUnitSource,
+    Page,
+    ProcessingRun,
+)
 from test_postgres_document_store import FakeSession
 
 
@@ -204,25 +214,77 @@ def test_txt_ingestor_integrates_with_ingestion_orchestrator(tmp_path):
     ]
 
 
-def test_full_txt_chain_persists_without_pages_or_content_blocks(tmp_path):
+def test_full_txt_chain_persists_common_representation_once(tmp_path):
     path = tmp_path / "stored.txt"
     path.write_text("Un.\n\nDeux.", encoding="utf-8")
     request, _ = make_source(path)
-    session = FakeSession()
-    orchestrator = IngestionOrchestrator(
-        detector=PlainTextDetector(),
-        ingestor_selector=SourceIngestorSelector([TxtSourceIngestor()]),
-        document_store=PostgresDocumentStore(session),
-    )
+    engine = create_database_engine()
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            with Session(bind=connection) as session:
+                orchestrator = IngestionOrchestrator(
+                    detector=PlainTextDetector(),
+                    ingestor_selector=SourceIngestorSelector([TxtSourceIngestor()]),
+                    document_store=PostgresDocumentStore(session),
+                )
+                result = orchestrator.ingest(request)
+                repeated = orchestrator.ingest(
+                    IngestionRequest(
+                        source=request.source,
+                        document_id=result.document_id,
+                    )
+                )
 
-    result = orchestrator.ingest(request)
+                pages = session.exec(
+                    select(Page).where(Page.document_version_id == result.document_version_id)
+                ).all()
+                blocks = session.exec(
+                    select(ContentBlock).where(ContentBlock.page_id == pages[0].id)
+                    .order_by(ContentBlock.block_index)
+                ).all()
+                fragments = session.exec(
+                    select(ContentBlockFragment).where(
+                        ContentBlockFragment.page_id == pages[0].id
+                    )
+                ).all()
+                runs = session.exec(
+                    select(ProcessingRun).where(
+                        ProcessingRun.document_version_id == result.document_version_id,
+                        ProcessingRun.process_type == "content_normalization",
+                    )
+                ).all()
+                units = session.exec(
+                    select(NormalizedContentUnit).where(
+                        NormalizedContentUnit.processing_run_id == runs[0].id
+                    ).order_by(NormalizedContentUnit.unit_index)
+                ).all()
+                sources = session.exec(
+                    select(NormalizedContentUnitSource).where(
+                        NormalizedContentUnitSource.normalized_content_unit_id.in_(
+                            [unit.id for unit in units]
+                        )
+                    )
+                ).all()
 
-    assert result.status == "created"
-    assert len(session.documents) == 1
-    assert len(session.versions) == 1
-    assert [unit.content for unit in session.units] == ["Un.", "Deux."]
-    assert not hasattr(session, "pages")
-    assert not hasattr(session, "content_blocks")
+                assert result.status == "created"
+                assert repeated.status == "already_exists"
+                assert repeated.document_version_id == result.document_version_id
+                assert len(pages) == 1
+                assert pages[0].page_number == 1
+                assert pages[0].width is None and pages[0].height is None
+                assert pages[0].perception_mode == "logical_text"
+                assert pages[0].ocr_required is False
+                assert pages[0].ocr_performed is False
+                assert [block.content for block in blocks] == ["Un.", "Deux."]
+                assert len(fragments) == 2
+                assert all(fragment.coordinate_system is None for fragment in fragments)
+                assert len(runs) == 1
+                assert [unit.content for unit in units] == ["Un.", "Deux."]
+                assert len(sources) == 2
+        finally:
+            transaction.rollback()
+    engine.dispose()
 
 
 def test_txt_ingestor_has_no_rag_or_disallowed_format_dependencies():

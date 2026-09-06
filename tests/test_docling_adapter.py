@@ -14,6 +14,7 @@ from kaliok.indexing.docling import store_docling_document
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ContentBlock,
+    ContentBlockFragment,
     ChunkContentBlock,
     ChunkEmbedding,
     Document,
@@ -274,6 +275,17 @@ def test_docling_blocks_are_persisted_without_becoming_current():
                     block.extra_data["docling_self_ref"]: block
                     for block in blocks
                 }
+                fragments = session.exec(
+                    select(ContentBlockFragment).where(
+                        ContentBlockFragment.content_block_id.in_(
+                            [block.id for block in blocks]
+                        )
+                    )
+                ).all()
+                fragments_by_block_id = {
+                    fragment.content_block_id: fragment
+                    for fragment in fragments
+                }
 
                 assert run.status == "completed"
                 assert run.engine == "docling"
@@ -300,8 +312,70 @@ def test_docling_blocks_are_persisted_without_becoming_current():
                 assert not any(
                     block.block_type == "table_cell" for block in blocks
                 )
+                assert len(fragments) == len(blocks)
+                heading_fragment = fragments_by_block_id[heading.id]
+                assert heading_fragment.fragment_index == 0
+                assert heading_fragment.page_id == heading.page_id
+                assert heading_fragment.content == heading.content
+                assert heading_fragment.reading_order == heading.reading_order
+                assert heading_fragment.bbox_x == heading.bbox_x
+                assert heading_fragment.bbox_y == heading.bbox_y
+                assert heading_fragment.bbox_width == heading.bbox_width
+                assert heading_fragment.bbox_height == heading.bbox_height
+                assert (
+                    heading_fragment.coordinate_system
+                    == heading.coordinate_system
+                )
         finally:
             transaction.rollback()
+
+
+def test_content_block_supports_fragments_on_multiple_pages(docling_session):
+    version, first_page = _create_version(docling_session, page_count=2)
+    assert first_page is not None
+    second_page = Page(document_version_id=version.id, page_number=2)
+    docling_session.add(second_page)
+    docling_session.flush()
+    block = ContentBlock(
+        page_id=first_page.id,
+        block_index=0,
+        reading_order=0,
+        content="Paragraphe réparti sur deux pages",
+        extraction_method="native",
+    )
+    docling_session.add(block)
+    docling_session.flush()
+    docling_session.add_all(
+        [
+            ContentBlockFragment(
+                content_block_id=block.id,
+                page_id=first_page.id,
+                fragment_index=0,
+                reading_order=0,
+                content="Paragraphe réparti",
+            ),
+            ContentBlockFragment(
+                content_block_id=block.id,
+                page_id=second_page.id,
+                fragment_index=1,
+                reading_order=0,
+                content="sur deux pages",
+            ),
+        ]
+    )
+    docling_session.flush()
+
+    fragments = docling_session.exec(
+        select(ContentBlockFragment)
+        .where(ContentBlockFragment.content_block_id == block.id)
+        .order_by(ContentBlockFragment.fragment_index)
+    ).all()
+
+    assert [fragment.page_id for fragment in fragments] == [
+        first_page.id,
+        second_page.id,
+    ]
+    assert [fragment.fragment_index for fragment in fragments] == [0, 1]
 
 
 def test_second_identical_docling_call_is_idempotent(docling_session):

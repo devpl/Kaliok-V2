@@ -11,6 +11,11 @@ from kaliok.rag_runtime.postgres import (
     normalized_version_is_indexed,
 )
 from kaliok.rag_runtime.simple_context import RankedContextBuilder
+from kaliok.rag_runtime.factory import (
+    NormalizedRagRuntime,
+    RagRuntimeConfiguration,
+    create_normalized_rag_runtime,
+)
 
 __all__ = [
     "NORMALIZED_CHUNKING_STRATEGY",
@@ -23,4 +28,7 @@ __all__ = [
     "PostgresVectorRetriever",
     "RankedContextBuilder",
     "normalized_version_is_indexed",
+    "NormalizedRagRuntime",
+    "RagRuntimeConfiguration",
+    "create_normalized_rag_runtime",
 ]

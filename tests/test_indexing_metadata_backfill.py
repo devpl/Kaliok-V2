@@ -17,6 +17,7 @@ from kaliok.storage.models import (
     ChunkContentBlock,
     ChunkEmbedding,
     ContentBlock,
+    ContentBlockFragment,
     DocumentChunk,
     DocumentVersion,
     Page,
@@ -272,6 +273,34 @@ def test_page_metadata_backfill_keeps_a_non_empty_current_perception(
                         )
                     ).one()
                     assert block_count > 0
+
+                    current_blocks = session.exec(
+                        select(ContentBlock).where(
+                            ContentBlock.page_id == page.id,
+                            ContentBlock.processing_run_id == run.id,
+                        )
+                    ).all()
+                    for block in current_blocks:
+                        fragments = session.exec(
+                            select(ContentBlockFragment).where(
+                                ContentBlockFragment.content_block_id
+                                == block.id
+                            )
+                        ).all()
+                        assert len(fragments) == 1
+                        fragment = fragments[0]
+                        assert fragment.fragment_index == 0
+                        assert fragment.page_id == block.page_id
+                        assert fragment.content == block.content
+                        assert fragment.reading_order == block.reading_order
+                        assert fragment.bbox_x == block.bbox_x
+                        assert fragment.bbox_y == block.bbox_y
+                        assert fragment.bbox_width == block.bbox_width
+                        assert fragment.bbox_height == block.bbox_height
+                        assert (
+                            fragment.coordinate_system
+                            == block.coordinate_system
+                        )
 
                 assert (
                     service.get_perception_storage_state(

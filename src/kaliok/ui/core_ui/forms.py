@@ -16,3 +16,16 @@ class DocumentUploadForm(forms.Form):
             )
 
         return uploaded_file
+
+
+class RagQuestionForm(forms.Form):
+    question = forms.CharField(
+        label="Question",
+        max_length=2000,
+        widget=forms.Textarea(
+            attrs={
+                "rows": 3,
+                "placeholder": "Posez une question sur ce document…",
+            }
+        ),
+    )

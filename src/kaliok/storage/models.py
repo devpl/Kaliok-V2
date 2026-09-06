@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Column, String, UniqueConstraint
+from pydantic import field_validator
+from sqlalchemy import CheckConstraint, Column, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, SQLModel
 
@@ -114,15 +115,39 @@ class DocumentVersion(SQLModel, table=True):
 class NormalizedContentUnit(SQLModel, table=True):
     __tablename__ = "normalized_content_units"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_normalized_content_units_historical_version_index",
             "document_version_id",
             "unit_index",
-            name="uq_normalized_content_units_version_index",
+            unique=True,
+            postgresql_where=text("processing_run_id IS NULL"),
         ),
-        UniqueConstraint(
+        Index(
+            "uq_normalized_content_units_historical_version_source_unit",
             "document_version_id",
             "source_unit_id",
-            name="uq_normalized_content_units_version_source_unit",
+            unique=True,
+            postgresql_where=text(
+                "processing_run_id IS NULL AND source_unit_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_normalized_content_units_run_version_index",
+            "processing_run_id",
+            "document_version_id",
+            "unit_index",
+            unique=True,
+            postgresql_where=text("processing_run_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_normalized_content_units_run_version_source_unit",
+            "processing_run_id",
+            "document_version_id",
+            "source_unit_id",
+            unique=True,
+            postgresql_where=text(
+                "processing_run_id IS NOT NULL AND source_unit_id IS NOT NULL"
+            ),
         ),
         CheckConstraint(
             "unit_index >= 0",
@@ -132,8 +157,15 @@ class NormalizedContentUnit(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
-    document_version_id: UUID = Field(
+    document_version_id: UUID | None = Field(
+        default=None,
         foreign_key="document_versions.id",
+    )
+
+    processing_run_id: UUID | None = Field(
+        default=None,
+        foreign_key="processing_runs.id",
+        index=True,
     )
 
     parent_unit_id: UUID | None = Field(
@@ -156,7 +188,8 @@ class Page(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
-    document_version_id: UUID = Field(
+    document_version_id: UUID | None = Field(
+        default=None,
         foreign_key="document_versions.id",
     )
 
@@ -253,6 +286,138 @@ class ContentBlock(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ContentBlockFragment(SQLModel, table=True):
+    __tablename__ = "content_block_fragments"
+    __table_args__ = (
+        UniqueConstraint(
+            "content_block_id",
+            "fragment_index",
+            name="uq_content_block_fragments_block_index",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    content_block_id: UUID = Field(
+        foreign_key="content_blocks.id",
+        index=True,
+    )
+
+    page_id: UUID = Field(
+        foreign_key="pages.id",
+        index=True,
+    )
+
+    fragment_index: int
+    reading_order: int | None = None
+
+    content: str
+
+    bbox_x: float | None = None
+    bbox_y: float | None = None
+    bbox_width: float | None = None
+    bbox_height: float | None = None
+
+    coordinate_system: str | None = None
+
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False),
+    )
+
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class NormalizedContentUnitSource(SQLModel, table=True):
+    __tablename__ = "normalized_content_unit_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalized_content_unit_id",
+            "content_block_id",
+            name="uq_normalized_content_unit_sources_unit_block",
+        ),
+        UniqueConstraint(
+            "normalized_content_unit_id",
+            "source_order",
+            name="uq_normalized_content_unit_sources_unit_order",
+        ),
+        CheckConstraint(
+            "source_order >= 0",
+            name="ck_normalized_content_unit_sources_order_nonnegative",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    normalized_content_unit_id: UUID = Field(
+        foreign_key="normalized_content_units.id",
+    )
+
+    content_block_id: UUID = Field(
+        foreign_key="content_blocks.id",
+        index=True,
+    )
+
+    source_order: int
+
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class DiscoveredCandidate(SQLModel, table=True):
+    __tablename__ = "discovered_candidates"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    document_version_id: UUID = Field(foreign_key="document_versions.id", index=True)
+    processing_run_id: UUID = Field(foreign_key="processing_runs.id", index=True)
+    candidate_type: str
+    raw_value: str
+    normalized_value: str | None = None
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    confidence: float | None = None
+    detector_key: str
+    detector_version: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class CandidateSourceFragment(SQLModel, table=True):
+    __tablename__ = "candidate_source_fragments"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "fragment_order",
+            name="uq_candidate_source_fragments_candidate_order",
+        ),
+        CheckConstraint(
+            "fragment_order >= 0",
+            name="ck_candidate_source_fragments_order_nonnegative",
+        ),
+        CheckConstraint(
+            "start_offset IS NULL OR start_offset >= 0",
+            name="ck_candidate_source_fragments_start_nonnegative",
+        ),
+        CheckConstraint(
+            "end_offset IS NULL OR start_offset IS NULL OR end_offset >= start_offset",
+            name="ck_candidate_source_fragments_offsets_ordered",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    candidate_id: UUID = Field(foreign_key="discovered_candidates.id", index=True)
+    normalized_content_unit_id: UUID = Field(
+        foreign_key="normalized_content_units.id",
+        index=True,
+    )
+    fragment_order: int
+    start_offset: int | None = None
+    end_offset: int | None = None
+    exact_text: str
+    role: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class DocumentChunk(SQLModel, table=True):
     __tablename__ = "document_chunks"
 
@@ -311,10 +476,18 @@ class ChunkContentBlock(SQLModel, table=True):
 
 class ProcessingRun(SQLModel, table=True):
     __tablename__ = "processing_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "execution_environment IS NULL OR execution_environment IN "
+            "('production', 'experiment')",
+            name="ck_processing_runs_execution_environment",
+        ),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
-    document_version_id: UUID = Field(
+    document_version_id: UUID | None = Field(
+        default=None,
         foreign_key="document_versions.id",
     )
 
@@ -323,6 +496,18 @@ class ProcessingRun(SQLModel, table=True):
 
     engine: str | None = None
     engine_version: str | None = None
+
+    execution_environment: str | None = None
+
+    configuration_revision_id: UUID | None = Field(
+        default=None,
+        foreign_key="configuration_profile_revisions.id",
+        index=True,
+    )
+
+    execution_group_id: UUID | None = Field(default=None, index=True)
+
+    configuration_hash: str | None = None
 
     configuration: dict[str, Any] = Field(
         default_factory=dict,
@@ -338,6 +523,87 @@ class ProcessingRun(SQLModel, table=True):
     completed_at: datetime | None = None
 
     error_message: str | None = None
+
+    def __init__(self, **data: Any) -> None:
+        environment = data.get("execution_environment")
+        if environment is not None and environment not in {"production", "experiment"}:
+            raise ValueError(
+                "execution_environment doit être 'production' ou 'experiment'."
+            )
+        super().__init__(**data)
+
+    @field_validator("execution_environment")
+    @classmethod
+    def validate_execution_environment(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"production", "experiment"}:
+            raise ValueError(
+                "execution_environment doit être 'production' ou 'experiment'."
+            )
+        return value
+
+
+class EntityResolutionScopeItem(SQLModel, table=True):
+    __tablename__ = "entity_resolution_scope_items"
+    __table_args__ = (
+        UniqueConstraint("processing_run_id", "discovered_candidate_id", name="uq_er_scope_run_candidate"),
+        UniqueConstraint("processing_run_id", "scope_order", name="uq_er_scope_run_order"),
+        CheckConstraint("scope_order >= 0", name="ck_er_scope_order_nonnegative"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    processing_run_id: UUID = Field(foreign_key="processing_runs.id", index=True)
+    discovered_candidate_id: UUID = Field(foreign_key="discovered_candidates.id", index=True)
+    scope_order: int
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class Entity(SQLModel, table=True):
+    __tablename__ = "entities"
+    __table_args__ = (
+        UniqueConstraint("processing_run_id", "entity_index", name="uq_entities_run_index"),
+        CheckConstraint("entity_index >= 0", name="ck_entities_index_nonnegative"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    processing_run_id: UUID = Field(foreign_key="processing_runs.id", index=True)
+    entity_index: int
+    entity_type: str
+    canonical_label: str
+    status: str = "proposed"
+    confidence: float | None = None
+    extra_data: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSONB, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class EntityMembership(SQLModel, table=True):
+    __tablename__ = "entity_memberships"
+    __table_args__ = (
+        UniqueConstraint("processing_run_id", "discovered_candidate_id", name="uq_entity_membership_run_candidate"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    entity_id: UUID = Field(foreign_key="entities.id", index=True)
+    discovered_candidate_id: UUID = Field(foreign_key="discovered_candidates.id", index=True)
+    processing_run_id: UUID = Field(foreign_key="processing_runs.id", index=True)
+    membership_status: str = "proposed"
+    confidence: float | None = None
+    decision_origin: str
+    extra_data: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSONB, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class EntityResolutionEvidence(SQLModel, table=True):
+    __tablename__ = "entity_resolution_evidence"
+    __table_args__ = (
+        UniqueConstraint("membership_id", "evidence_order", name="uq_er_evidence_membership_order"),
+        CheckConstraint("evidence_order >= 0", name="ck_er_evidence_order_nonnegative"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    membership_id: UUID = Field(foreign_key="entity_memberships.id", index=True)
+    evidence_order: int
+    signal_key: str
+    method: str
+    score: float | None = None
+    explanation: str | None = None
+    extra_data: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSONB, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class EmbeddingModel(SQLModel, table=True):
@@ -360,6 +626,235 @@ class EmbeddingModel(SQLModel, table=True):
     is_active: bool = True
 
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class SettingCategory(SQLModel, table=True):
+    __tablename__ = "setting_categories"
+    __table_args__ = (
+        UniqueConstraint(
+            "category_key",
+            name="uq_setting_categories_category_key",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    parent_category_id: UUID | None = Field(
+        default=None,
+        foreign_key="setting_categories.id",
+        index=True,
+    )
+
+    category_key: str = Field(index=True)
+    label: str
+    description: str | None = None
+
+    display_order: int = 0
+    is_active: bool = True
+
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SettingDefinition(SQLModel, table=True):
+    __tablename__ = "setting_definitions"
+    __table_args__ = (
+        UniqueConstraint(
+            "category_id",
+            "setting_key",
+            name="uq_setting_definitions_category_key",
+        ),
+        CheckConstraint(
+            "value_type IN ("
+            "'string', "
+            "'integer', "
+            "'float', "
+            "'boolean', "
+            "'choice', "
+            "'multichoice'"
+            ")",
+            name="ck_setting_definitions_value_type",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    category_id: UUID = Field(
+        foreign_key="setting_categories.id",
+        index=True,
+    )
+
+    setting_key: str
+    label: str
+    description: str | None = None
+
+    value_type: str
+
+    is_required: bool = False
+    is_editable: bool = True
+    is_encrypted: bool = False
+
+    display_order: int = 0
+
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SettingOption(SQLModel, table=True):
+    __tablename__ = "setting_options"
+    __table_args__ = (
+        UniqueConstraint(
+            "setting_definition_id",
+            "option_key",
+            name="uq_setting_options_definition_key",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    setting_definition_id: UUID = Field(
+        foreign_key="setting_definitions.id",
+        index=True,
+    )
+
+    option_key: str
+    label: str
+    description: str | None = None
+
+    display_order: int = 0
+    is_active: bool = True
+
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ConfigurationProfile(SQLModel, table=True):
+    __tablename__ = "configuration_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_key",
+            name="uq_configuration_profiles_profile_key",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    profile_key: str = Field(index=True)
+    label: str
+    description: str | None = None
+
+    is_active: bool = True
+    is_default: bool = False
+
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ConfigurationProfileRevision(SQLModel, table=True):
+    __tablename__ = "configuration_profile_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "revision_number",
+            name="uq_configuration_profile_revisions_number",
+        ),
+        CheckConstraint(
+            "revision_number > 0",
+            name="ck_configuration_profile_revisions_number_positive",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'retired')",
+            name="ck_configuration_profile_revisions_status",
+        ),
+        CheckConstraint(
+            "created_by_actor_type IN "
+            "('user', 'system', 'service', 'migration')",
+            name="ck_configuration_profile_revisions_actor_type",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    profile_id: UUID = Field(
+        foreign_key="configuration_profiles.id",
+        index=True,
+    )
+
+    revision_number: int
+    status: str = "draft"
+
+    change_reason: str | None = None
+
+    created_by_actor_type: str = "user"
+    created_by_user_id: str | None = None
+    created_by_display_name: str
+
+    created_at: datetime = Field(default_factory=utc_now)
+
+    activated_by_user_id: str | None = None
+    activated_by_display_name: str | None = None
+    activated_at: datetime | None = None
+
+
+class ConfigurationValue(SQLModel, table=True):
+    __tablename__ = "configuration_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "revision_id",
+            "setting_definition_id",
+            name="uq_configuration_values_revision_setting",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    revision_id: UUID = Field(
+        foreign_key="configuration_profile_revisions.id",
+        index=True,
+    )
+
+    setting_definition_id: UUID = Field(
+        foreign_key="setting_definitions.id",
+        index=True,
+    )
+
+    value_text: str | None = None
+    value_integer: int | None = None
+    value_float: float | None = None
+    value_boolean: bool | None = None
+
+    selected_option_id: UUID | None = Field(
+        default=None,
+        foreign_key="setting_options.id",
+    )
+
+    encrypted_value: str | None = None
+    encryption_key_id: str | None = None
+
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ConfigurationValueOption(SQLModel, table=True):
+    __tablename__ = "configuration_value_options"
+    __table_args__ = (
+        UniqueConstraint(
+            "configuration_value_id",
+            "setting_option_id",
+            name="uq_configuration_value_options_selection",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    configuration_value_id: UUID = Field(
+        foreign_key="configuration_values.id",
+        index=True,
+    )
+
+    setting_option_id: UUID = Field(
+        foreign_key="setting_options.id",
+        index=True,
+    )
 
 
 class ChunkEmbedding(SQLModel, table=True):
@@ -391,14 +886,18 @@ class Question(SQLModel, table=True):
 
     question_text: str
 
+    expected_answer: str | None = None
+
     document_id: UUID | None = Field(
         default=None,
         foreign_key="documents.id",
+        index=True,
     )
 
     document_version_id: UUID | None = Field(
         default=None,
         foreign_key="document_versions.id",
+        index=True,
     )
 
     status: str = "pending"
@@ -419,11 +918,31 @@ class Question(SQLModel, table=True):
 
 class QuestionAttempt(SQLModel, table=True):
     __tablename__ = "question_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "attempt_number",
+            name="uq_question_attempts_question_number",
+        ),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     question_id: UUID = Field(
         foreign_key="questions.id",
+        index=True,
+    )
+
+    configuration_revision_id: UUID | None = Field(
+        default=None,
+        foreign_key="configuration_profile_revisions.id",
+        index=True,
+    )
+
+    evaluation_campaign_id: UUID | None = Field(
+        default=None,
+        foreign_key="evaluation_campaigns.id",
+        index=True,
     )
 
     attempt_number: int
@@ -461,6 +980,7 @@ class QuestionEvidence(SQLModel, table=True):
 
     question_attempt_id: UUID = Field(
         foreign_key="question_attempts.id",
+        index=True,
     )
 
     document_version_id: UUID | None = Field(
@@ -504,11 +1024,13 @@ class QuestionFeedback(SQLModel, table=True):
 
     question_id: UUID = Field(
         foreign_key="questions.id",
+        index=True,
     )
 
     question_attempt_id: UUID | None = Field(
         default=None,
         foreign_key="question_attempts.id",
+        index=True,
     )
 
     origin: str = "user"
@@ -527,3 +1049,69 @@ class QuestionFeedback(SQLModel, table=True):
     )
 
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class EvaluationSuite(SQLModel, table=True):
+    __tablename__ = "evaluation_suites"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    name: str
+    description: str | None = None
+    status: str = "active"
+
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class EvaluationSuiteQuestion(SQLModel, table=True):
+    __tablename__ = "evaluation_suite_questions"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_suite_id",
+            "question_id",
+            name="uq_evaluation_suite_questions_question",
+        ),
+        UniqueConstraint(
+            "evaluation_suite_id",
+            "position",
+            name="uq_evaluation_suite_questions_position",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    evaluation_suite_id: UUID = Field(
+        foreign_key="evaluation_suites.id",
+        index=True,
+    )
+    question_id: UUID = Field(
+        foreign_key="questions.id",
+        index=True,
+    )
+
+    position: int
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class EvaluationCampaign(SQLModel, table=True):
+    __tablename__ = "evaluation_campaigns"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    suite_id: UUID | None = Field(
+        default=None,
+        foreign_key="evaluation_suites.id",
+    )
+
+    name: str
+    status: str = "pending"
+
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+
+    created_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None

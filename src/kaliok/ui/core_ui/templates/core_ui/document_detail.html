@@ -15,6 +15,51 @@
         {% endif %}
     </h1>
 
+    <h2>Interroger le document</h2>
+
+    <form method="post">
+        {% csrf_token %}
+        {{ rag_form.as_p }}
+        <button type="submit">Poser la question</button>
+    </form>
+
+    {% if rag_error %}
+        <p>{{ rag_error }}</p>
+    {% endif %}
+
+    {% if rag_answer %}
+        <h3>Réponse</h3>
+        <p>{{ rag_answer.answer }}</p>
+
+        {% if rag_answer.sources %}
+            <h3>Sources utilisées</h3>
+
+            <ol>
+                {% for source in rag_answer.sources %}
+                    <li>
+                        <p>
+                            <strong>Rang {{ source.rank }}</strong>
+                            — score {{ source.score|floatformat:3 }}
+                        </p>
+
+                        <blockquote>
+                            {{ source.text }}
+                        </blockquote>
+
+                        <p>
+                            <small>
+                                Source :
+                                <code>
+                                    {{ source.normalized_content_unit_id }}
+                                </code>
+                            </small>
+                        </p>
+                    </li>
+                {% endfor %}
+            </ol>
+        {% endif %}
+    {% endif %}
+
     <h2>Document</h2>
 
     <dl>

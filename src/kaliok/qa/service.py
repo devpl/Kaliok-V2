@@ -21,22 +21,30 @@ def create_question(
     document_id: UUID | None = None,
     document_version_id: UUID | None = None,
     priority: int = 0,
+    expected_answer: str | None = None,
+    session: Session | None = None,
 ) -> Question:
-    engine = create_database_engine()
-
     question = Question(
         origin=origin,
         question_text=question_text,
+        expected_answer=expected_answer,
         document_id=document_id,
         document_version_id=document_version_id,
         priority=priority,
         status="pending",
     )
 
-    with Session(engine) as session:
+    if session is not None:
         session.add(question)
         session.commit()
         session.refresh(question)
+        return question
+
+    engine = create_database_engine()
+    with Session(engine) as owned_session:
+        owned_session.add(question)
+        owned_session.commit()
+        owned_session.refresh(question)
 
     return question
 
@@ -218,4 +226,4 @@ def get_attempts(
                 )
             ).all()
         )
-    
+

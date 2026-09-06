@@ -44,6 +44,7 @@ class OllamaGenerator:
         self,
         model: str | None = None,
         *,
+        temperature: float = 0.0,
         base_url: str = OLLAMA_URL,
         timeout: float = 300,
     ) -> None:
@@ -53,6 +54,8 @@ class OllamaGenerator:
                 "Un modèle est requis via --generation-model ou "
                 "KALIOK_GENERATION_MODEL."
             )
+
+        self.temperature = temperature
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
 
@@ -62,24 +65,35 @@ class OllamaGenerator:
             "Si le contexte ne suffit pas, indique-le explicitement. "
             "N'invente aucune information. Cite les identifiants de source "
             "présents dans le contexte.\n\n"
-            f"Question :\n{question}\n\nContexte :\n{context.text}\n\nRéponse :"
+            f"Question :\n{question}\n\n"
+            f"Contexte :\n{context.text}\n\n"
+            "Réponse :"
         )
+
         response = requests.post(
             f"{self._base_url}/api/generate",
             json={
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0},
+                "options": {
+                    "temperature": self.temperature,
+                },
             },
             timeout=self._timeout,
         )
+
         response.raise_for_status()
+
         text = response.json().get("response")
+
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Réponse Ollama de génération invalide.")
+
         return RagAnswer(
             text=text.strip(),
             context=context,
-            metadata={"model": self.model},
+            metadata={
+                "model": self.model,
+            },
         )

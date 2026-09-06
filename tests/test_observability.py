@@ -201,6 +201,7 @@ def test_rag_answer_event_order_with_optional_steps():
     assert answer.text == "réponse"
     assert [event.event_name for event in observer.events] == [
         "rag.answer.started",
+        "rag.query_embedding.completed",
         "rag.retrieval.completed",
         "rag.fusion.completed",
         "rag.reranking.completed",
@@ -226,6 +227,7 @@ def test_rag_answer_omits_optional_step_events_when_not_executed():
     assert "rag.reranking.completed" not in names
     assert names == [
         "rag.answer.started",
+        "rag.query_embedding.completed",
         "rag.retrieval.completed",
         "rag.context.completed",
         "rag.generation.completed",
@@ -243,6 +245,7 @@ def test_rag_emits_error_and_preserves_original_exception():
     error = observer.events[-1]
     assert [event.event_name for event in observer.events] == [
         "rag.answer.started",
+        "rag.query_embedding.completed",
         "rag.error",
     ]
     assert error.operation == "retrieval"

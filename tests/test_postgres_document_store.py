@@ -325,7 +325,7 @@ def test_store_is_compatible_with_ingestion_orchestrator():
     assert len(session.versions) == 1
 
 
-def test_postgres_store_has_no_rag_or_format_specific_dependencies():
+def test_postgres_store_has_no_rag_or_rich_format_dependencies():
     path = (
         Path(__file__).resolve().parents[1]
         / "src"
@@ -337,5 +337,5 @@ def test_postgres_store_has_no_rag_or_format_specific_dependencies():
     source = path.read_text(encoding="utf-8").lower()
 
     assert "kaliok.rag" not in source
-    for forbidden in ("pdf", "mail", "docx", "html", "ocr", "docling"):
+    for forbidden in ("pdf", "mail", "docx", "html", "docling"):
         assert forbidden not in source

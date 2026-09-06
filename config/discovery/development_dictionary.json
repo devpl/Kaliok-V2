@@ -1,0 +1,34 @@
+{
+  "dictionary_key": "development-fr",
+  "name": "Dictionnaire de développement français",
+  "version": "1",
+  "description": "Petit dictionnaire de développement ; ses catégories ne constituent pas une ontologie métier définitive.",
+  "language": "fr",
+  "case_sensitive": false,
+  "boundary_policy": "unicode_word",
+  "terms": [
+    {
+      "value": "Jean Lèques",
+      "candidate_type": "person_name",
+      "payload": {"purpose": "development_validation"}
+    },
+    {
+      "value": "Nouméa",
+      "candidate_type": "place_name",
+      "confidence": 1.0,
+      "payload": {"purpose": "unicode_reference"}
+    },
+    {
+      "value": "Chambre territoriale des comptes",
+      "candidate_type": "organization"
+    },
+    {
+      "value": "24, rue de la République",
+      "candidate_type": "address_or_location"
+    },
+    {
+      "value": "marché public",
+      "candidate_type": "domain_term"
+    }
+  ]
+}

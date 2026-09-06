@@ -178,7 +178,20 @@ class RagOrchestrator:
         try:
             operation = "query_embedding"
             implementation = type(self._embedder).__name__
+            timer = Timer.start()
             query_embedding = self._embedder.embed_query(question)
+            self._emit(
+                "rag.query_embedding.completed",
+                execution_id,
+                component="embedding",
+                implementation=implementation,
+                operation=operation,
+                duration_ms=timer.elapsed_ms(),
+                input_count=1,
+                output_count=1,
+                success=True,
+                **identity,
+            )
 
             operation = "retrieval"
             implementation = type(self._retriever).__name__

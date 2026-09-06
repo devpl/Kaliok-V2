@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlmodel import Session, select
 
+from kaliok.execution import ExecutionContext, apply_execution_context
 from kaliok.ingestion.types import (
     Identifier,
     IngestionRequest,
@@ -11,11 +12,17 @@ from kaliok.ingestion.types import (
     NormalizedContentUnit,
     NormalizedDocument,
 )
+from kaliok.normalization import ContentNormalizationService
 from kaliok.storage.models import (
+    ContentBlock,
+    ContentBlockFragment,
     Document,
     DocumentVersion,
     NormalizedContentUnit as StoredContentUnit,
+    Page,
+    ProcessingRun,
     Source,
+    utc_now,
 )
 
 
@@ -33,6 +40,8 @@ class PostgresDocumentStore:
         self,
         request: IngestionRequest,
         document: NormalizedDocument,
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> IngestionResult:
         self._validate(document)
 
@@ -48,6 +57,12 @@ class PostgresDocumentStore:
                 document.content_hash,
             )
             if existing_version is not None:
+                if self._uses_common_representation(document):
+                    return self._result(
+                        existing_version,
+                        document,
+                        status="already_exists",
+                    )
                 self._ensure_content(existing_version, document.units)
                 return self._result(
                     existing_version,
@@ -69,7 +84,7 @@ class PostgresDocumentStore:
                 file_hash=document.content_hash,
                 file_size=document.file_size,
                 storage_uri=document.storage_uri,
-                page_count=document.page_count,
+                page_count=(1 if self._uses_common_representation(document) else document.page_count),
                 document_type=document.document_type,
                 document_subtype=document.document_subtype,
                 version_status="active",
@@ -79,9 +94,96 @@ class PostgresDocumentStore:
             )
             self._session.add(version)
             self._session.flush()
-            self._store_content(version.id, document.units)
+            normalization_run_id = None
+            if self._uses_common_representation(document):
+                normalization_run_id = self._store_common_content(
+                    version,
+                    document.units,
+                    execution_context=execution_context,
+                )
+                version.processing_status = "completed"
+                version.readability_status = "readable" if document.units else "unreadable"
+                version.processed_at = utc_now()
+                self._session.add(version)
+            else:
+                self._store_content(version.id, document.units)
 
-            return self._result(version, document, status="created")
+            return self._result(
+                version,
+                document,
+                status="created",
+                processing_run_id=normalization_run_id,
+            )
+
+    def _store_common_content(
+        self,
+        version: DocumentVersion,
+        units: tuple[NormalizedContentUnit, ...],
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> UUID:
+        perception_run = ProcessingRun(
+            document_version_id=version.id,
+            process_type="document_extraction",
+            status="completed",
+            engine="kaliok-txt",
+            engine_version="paragraphs-v1",
+            metrics={"source_block_count": len(units)},
+            completed_at=utc_now(),
+        )
+        apply_execution_context(self._session, perception_run, execution_context)
+        self._session.add(perception_run)
+        self._session.flush()
+        page = Page(
+            document_version_id=version.id,
+            page_number=1,
+            page_status="active",
+            width=None,
+            height=None,
+            has_native_text=bool(units),
+            native_text_length=sum(len(unit.content) for unit in units),
+            readability_status="readable" if units else "unreadable",
+            perception_mode="logical_text",
+            ocr_required=False,
+            ocr_performed=False,
+            perception_processing_run_id=perception_run.id,
+            extra_data={"logical_page": True, "source_format": "text/plain"},
+        )
+        self._session.add(page)
+        self._session.flush()
+        for unit in units:
+            block = ContentBlock(
+                page_id=page.id,
+                processing_run_id=perception_run.id,
+                block_index=unit.order,
+                reading_order=unit.order,
+                block_type="paragraph",
+                content=unit.content,
+                extraction_method="plain_text",
+                extraction_engine="kaliok-txt",
+                extraction_engine_version="paragraphs-v1",
+            )
+            self._session.add(block)
+            self._session.flush()
+            self._session.add(
+                ContentBlockFragment(
+                    content_block_id=block.id,
+                    page_id=page.id,
+                    fragment_index=0,
+                    reading_order=unit.order,
+                    content=unit.content,
+                    coordinate_system=None,
+                )
+            )
+        self._session.flush()
+        return ContentNormalizationService(self._session).normalize(
+            version.id,
+            execution_context=execution_context,
+        ).processing_run_id
+
+    @staticmethod
+    def _uses_common_representation(document: NormalizedDocument) -> bool:
+        return document.source.source_type == "plain_text"
 
     def _resolve_source_id(self, source_id: Identifier | None) -> UUID | None:
         if source_id is None:
@@ -283,11 +385,12 @@ class PostgresDocumentStore:
         normalized: NormalizedDocument,
         *,
         status: str,
+        processing_run_id: UUID | None = None,
     ) -> IngestionResult:
         return IngestionResult(
             document_id=version.document_id,
             document_version_id=version.id,
-            processing_run_id=None,
+            processing_run_id=processing_run_id,
             detected_source=normalized.source,
             status=status,
         )

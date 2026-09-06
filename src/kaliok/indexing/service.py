@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlmodel import Session, select
 
+from kaliok.execution import ExecutionContext, apply_execution_context
 from kaliok.documents.cleaning import clean_document
 from kaliok.documents.reader import read_document
 from kaliok.documents.semantic_chunking import (
@@ -18,12 +19,14 @@ from kaliok.embeddings.ollama import (
     embed_texts,
 )
 from kaliok.hashing import calculate_sha256
+from kaliok.normalization import ContentNormalizationService
 from kaliok.paths import TEST_DOCUMENTS
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ChunkContentBlock,
     ChunkEmbedding,
     ContentBlock,
+    ContentBlockFragment,
     Document,
     DocumentChunk,
     DocumentVersion,
@@ -565,6 +568,7 @@ def _enrich_existing_page_metadata(
     session: Session,
     version: DocumentVersion,
     document_content,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[
     ProcessingRun,
     dict[int, ContentBlock],
@@ -573,6 +577,7 @@ def _enrich_existing_page_metadata(
         session,
         version,
         document_content,
+        execution_context=execution_context,
     )
 
 
@@ -580,6 +585,7 @@ def _store_perception(
     session: Session,
     version: DocumentVersion,
     document_content,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[
     ProcessingRun,
     dict[int, ContentBlock],
@@ -592,6 +598,7 @@ def _store_perception(
         engine_version=PERCEPTION_VERSION,
         completed_at=utc_now(),
     )
+    apply_execution_context(session, processing_run, execution_context)
 
     session.add(processing_run)
     session.flush()
@@ -683,6 +690,21 @@ def _store_perception(
             session.add(stored_block)
             session.flush()
 
+            session.add(
+                ContentBlockFragment(
+                    content_block_id=stored_block.id,
+                    page_id=stored_page.id,
+                    fragment_index=0,
+                    reading_order=stored_block.reading_order,
+                    content=stored_block.content,
+                    bbox_x=stored_block.bbox_x,
+                    bbox_y=stored_block.bbox_y,
+                    bbox_width=stored_block.bbox_width,
+                    bbox_height=stored_block.bbox_height,
+                    coordinate_system=stored_block.coordinate_system,
+                )
+            )
+
             stored_blocks_by_source_index[
                 source_block_index
             ] = stored_block
@@ -698,6 +720,7 @@ def _store_new_perception_on_existing_pages(
     session: Session,
     version: DocumentVersion,
     document_content,
+    execution_context: ExecutionContext | None = None,
 ) -> tuple[
     ProcessingRun,
     dict[int, ContentBlock],
@@ -736,6 +759,7 @@ def _store_new_perception_on_existing_pages(
         engine_version=PERCEPTION_VERSION,
         completed_at=utc_now(),
     )
+    apply_execution_context(session, processing_run, execution_context)
 
     session.add(processing_run)
     session.flush()
@@ -811,6 +835,21 @@ def _store_new_perception_on_existing_pages(
 
             session.add(stored_block)
             session.flush()
+
+            session.add(
+                ContentBlockFragment(
+                    content_block_id=stored_block.id,
+                    page_id=stored_page.id,
+                    fragment_index=0,
+                    reading_order=stored_block.reading_order,
+                    content=stored_block.content,
+                    bbox_x=stored_block.bbox_x,
+                    bbox_y=stored_block.bbox_y,
+                    bbox_width=stored_block.bbox_width,
+                    bbox_height=stored_block.bbox_height,
+                    coordinate_system=stored_block.coordinate_system,
+                )
+            )
 
             stored_blocks_by_source_index[
                 source_block_index
@@ -914,8 +953,10 @@ def index_document(
     path: str | Path,
     *,
     verbose: bool = True,
+    execution_context: ExecutionContext | None = None,
 ) -> IndexDocumentResult:
     path = Path(path)
+    execution_context = execution_context or ExecutionContext(environment="production")
 
     if not path.exists():
         raise FileNotFoundError(
@@ -1169,6 +1210,7 @@ def index_document(
                 session,
                 existing_version,
                 document_content,
+                execution_context,
             )
 
             _link_existing_chunks_to_blocks(
@@ -1176,6 +1218,11 @@ def index_document(
                 chunks,
                 stored_chunks_by_index,
                 stored_blocks_by_source_index,
+            )
+
+            ContentNormalizationService(session).normalize(
+                existing_version.id,
+                execution_context=execution_context,
             )
 
             session.commit()
@@ -1432,6 +1479,7 @@ def index_document(
                 session,
                 version,
                 document_content,
+                execution_context,
             )
 
             _link_existing_chunks_to_blocks(
@@ -1439,6 +1487,11 @@ def index_document(
                 chunks,
                 stored_chunks_by_index,
                 stored_blocks_by_source_index,
+            )
+
+            ContentNormalizationService(session).normalize(
+                version.id,
+                execution_context=execution_context,
             )
 
             version.processing_status = "completed"
@@ -1520,6 +1573,7 @@ def index_document(
                 session,
                 version,
                 document_content,
+                execution_context,
             )
 
             stored_chunks_by_index = (
@@ -1534,6 +1588,11 @@ def index_document(
                 chunks,
                 stored_chunks_by_index,
                 stored_blocks_by_source_index,
+            )
+
+            ContentNormalizationService(session).normalize(
+                version.id,
+                execution_context=execution_context,
             )
 
             version.processing_status = (
@@ -1640,6 +1699,7 @@ def index_document(
                 session,
                 version,
                 document_content,
+                execution_context,
             )
 
             for chunk, embedding in zip(
@@ -1698,6 +1758,11 @@ def index_document(
                         embedding=embedding,
                     )
                 )
+
+            ContentNormalizationService(session).normalize(
+                version.id,
+                execution_context=execution_context,
+            )
 
             session.commit()
 

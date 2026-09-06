@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Kaliok V2" type="CompoundRunConfigurationType">
+    <toRun name="Kaliok API" type="PythonConfigurationType" />
+    <toRun name="Kaliok Lab" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>

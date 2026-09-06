@@ -1,0 +1,17 @@
+{
+  "dictionary_key": "development-fr",
+  "version": "2",
+  "name": "Dictionnaire de développement français",
+  "description": "Deuxième génération de développement, avec normalisation déclarative de la casse de Nouméa.",
+  "language": "fr",
+  "case_sensitive": false,
+  "boundary_policy": "unicode_word",
+  "terms": [
+    {"value": "Jean Lèques", "candidate_type": "person_name", "payload": {"purpose": "development_validation"}},
+    {"value": "Nouméa", "candidate_type": "place_name", "normalized_value": "Nouméa", "confidence": 1.0, "payload": {"purpose": "unicode_reference"}},
+    {"value": "Chambre territoriale des comptes", "candidate_type": "organization"},
+    {"value": "24, rue de la République", "candidate_type": "address_or_location"},
+    {"value": "marché public", "candidate_type": "domain_term"},
+    {"value": "Nouvelle-Calédonie", "candidate_type": "place_name", "normalized_value": "Nouvelle-Calédonie", "payload": {"purpose": "v2_comparison"}}
+  ]
+}

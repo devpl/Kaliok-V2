@@ -6,6 +6,12 @@ __pycache__/
 .env
 test_documents/
 
+# Allow sharing PyCharm run configurations only.
+!.idea/
+.idea/*
+!.idea/runConfigurations/
+!.idea/runConfigurations/*.xml
+
 # Artefacts locaux de benchmark / Docling
 RIDEAU_docling.json
 RIDEAU_docling_server_response.json

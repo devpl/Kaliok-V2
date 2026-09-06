@@ -3,6 +3,7 @@ from kaliok.storage.models import Document, DocumentVersion, Page, Source
 from kaliok.storage.models import (
     ChunkContentBlock,
     ContentBlock,
+    ContentBlockFragment,
     Document,
     DocumentChunk,
     DocumentVersion,
@@ -90,6 +91,34 @@ def test_content_block_creation():
     assert block.extraction_engine == "rapidocr"
     assert block.confidence == 0.94
     assert block.bbox["x0"] == 0.10
+
+
+def test_content_block_can_have_fragments_on_multiple_pages():
+    block_id = "00000000-0000-0000-0000-000000000001"
+    first = ContentBlockFragment(
+        content_block_id=block_id,
+        page_id="00000000-0000-0000-0000-000000000002",
+        fragment_index=0,
+        reading_order=3,
+        content="Début du paragraphe",
+        bbox_x=10.0,
+        bbox_y=20.0,
+        bbox_width=100.0,
+        bbox_height=30.0,
+        coordinate_system="TOPLEFT",
+    )
+    second = ContentBlockFragment(
+        content_block_id=block_id,
+        page_id="00000000-0000-0000-0000-000000000003",
+        fragment_index=1,
+        reading_order=0,
+        content="Fin du paragraphe",
+    )
+
+    assert first.content_block_id == second.content_block_id
+    assert first.page_id != second.page_id
+    assert [first.fragment_index, second.fragment_index] == [0, 1]
+    assert first.extra_data == {}
 
 def test_document_chunk_creation():
     chunk = DocumentChunk(
