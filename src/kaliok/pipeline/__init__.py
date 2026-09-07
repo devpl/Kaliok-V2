@@ -15,6 +15,7 @@ from kaliok.pipeline.real_registry import build_kaliok_component_registry
 from kaliok.pipeline.runtime import (
     ComponentRuntimeRegistry,
     DocumentPipelineExecutionResult,
+    KaliokDiscoveryAdapter,
     KaliokPerceptionAdapter,
     KaliokNormalizationAdapter,
     ManifestExecutionResult,
@@ -33,6 +34,7 @@ __all__ = [
     "compare_manifests",
     "ComponentRuntimeRegistry",
     "DocumentPipelineExecutionResult",
+    "KaliokDiscoveryAdapter",
     "KaliokPerceptionAdapter",
     "KaliokNormalizationAdapter",
     "ManifestExecutionResult",

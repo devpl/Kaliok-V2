@@ -26,9 +26,11 @@ from kaliok.pipeline import (
     build_kaliok_component_registry,
     build_kaliok_runtime_registry,
 )
+from kaliok.pipeline.runtime import KaliokDiscoveryAdapter
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ContentBlock,
+    DiscoveredCandidate,
     Document,
     DocumentVersion,
     NormalizedContentUnit,
@@ -132,6 +134,33 @@ def _document_pipeline_manifest() -> PipelineManifest:
                 component_version="block-to-unit-v1",
                 capabilities=("normalization",),
                 dependencies=("perception",),
+            ),
+        ),
+    )
+
+
+def _document_pipeline_with_discovery_manifest() -> PipelineManifest:
+    manifest = _document_pipeline_manifest()
+    return PipelineManifest(
+        pipeline_key=manifest.pipeline_key,
+        revision=manifest.revision,
+        bindings=manifest.bindings + (
+            ComponentBinding(
+                binding_key="discovery",
+                component_key="kaliok-candidate-discovery",
+                component_version="candidate-discovery-v1",
+                capabilities=("entity_discovery",),
+                configuration={
+                    "detectors": [{
+                        "key": "lexical_dictionary",
+                        "version": "1",
+                        "terms": [{
+                            "value": "Perception",
+                            "candidate_type": "label",
+                        }],
+                    }],
+                },
+                dependencies=("normalization",),
             ),
         ),
     )
@@ -327,6 +356,52 @@ def test_manifest_pipeline_chains_real_perception_to_normalization_without_promo
     page_after = session.get(Page, page.id)
     assert page_after is not None
     assert page_after.perception_processing_run_id == production_perception.id
+
+
+def test_manifest_pipeline_chains_explicit_discovery_from_its_normalization_run(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    manifest = _document_pipeline_with_discovery_manifest()
+    context = ExecutionContext(environment="experiment", execution_group_id=uuid4())
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+
+    result = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    ).execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=context,
+    )
+
+    assert result.discovery is not None
+    discovery_run = session.get(ProcessingRun, result.discovery.processing_run_id)
+    candidates = session.exec(
+        select(DiscoveredCandidate).where(
+            DiscoveredCandidate.processing_run_id == result.discovery.processing_run_id
+        )
+    ).all()
+    assert discovery_run is not None
+    assert discovery_run.status == "completed"
+    assert discovery_run.execution_environment == "experiment"
+    assert discovery_run.execution_group_id == context.execution_group_id
+    assert discovery_run.configuration["normalization_run_id"] == str(result.normalization.processing_run_id)
+    assert discovery_run.configuration["pipeline"]["manifest_hash"] == manifest.manifest_hash
+    assert discovery_run.configuration_hash == canonical_json_hash(discovery_run.configuration)
+    assert len(candidates) == 1
+    assert candidates[0].raw_value == "Perception"
+    assert candidates[0].processing_run_id == result.discovery.processing_run_id
+
+
+def test_discovery_adapter_requires_explicit_detector_terms():
+    with pytest.raises(ValueError, match="aucun dictionnaire implicite"):
+        KaliokDiscoveryAdapter._detectors({})
 
 
 def test_document_perception_default_still_promotes_current_pointer(session: Session):

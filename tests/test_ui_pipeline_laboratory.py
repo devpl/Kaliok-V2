@@ -177,7 +177,7 @@ def test_real_registry_exposes_components_by_capability_and_runtime_state():
     by_key = {item["key"]: item for item in capabilities}
     assert {item["component_key"] for item in by_key["normalization"]["components"]} == {"kaliok-normalizer"}
     assert by_key["normalization"]["status"] == "EXÉCUTABLE"
-    assert by_key["entity_discovery"]["components"][0]["runtime_status"] == "CONNU — NON RACCORDÉ"
+    assert by_key["entity_discovery"]["components"][0]["runtime_status"] == "EXECUTABLE"
 
 
 def test_pipeline_a_groups_one_web_component_across_capabilities_and_validates_scope():

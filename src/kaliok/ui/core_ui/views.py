@@ -11,6 +11,7 @@ from django.urls import reverse
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from kaliok.discovery import CandidateDiscoveryReadService
 from kaliok.execution import ExecutionContext
 from kaliok.normalization.comparison import ContentNormalizationComparisonService
 from kaliok.pipeline import (
@@ -24,6 +25,7 @@ from kaliok.pipeline import (
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ContentBlock,
+    DiscoveredCandidate,
     Document,
     DocumentVersion,
     NormalizedContentUnit,
@@ -344,7 +346,15 @@ def _pipeline_capabilities_payload(registry, runtime_registry, manifest):
         definitions = registry.for_capability(capability)
         selected = selected_by_capability.get(capability)
         if selected is None:
-            status = "DISPONIBLE — NON SÉLECTIONNÉE"
+            executable = any(
+                runtime_registry.has(*definition.identity)
+                for definition in definitions
+            )
+            status = (
+                "EXÉCUTABLE — NON SÉLECTIONNÉE"
+                if executable
+                else "DISPONIBLE — NON SÉLECTIONNÉE"
+            )
         elif runtime_registry.has(selected.component_key, selected.component_version):
             status = "EXÉCUTABLE"
         else:
@@ -398,6 +408,12 @@ def _count_run_artifacts(session, run):
         return int(session.exec(
             select(func.count(NormalizedContentUnit.id)).where(
                 NormalizedContentUnit.processing_run_id == run.id
+            )
+        ).one())
+    if run.process_type == "candidate_discovery":
+        return int(session.exec(
+            select(func.count(DiscoveredCandidate.id)).where(
+                DiscoveredCandidate.processing_run_id == run.id
             )
         ).one())
     return None
@@ -455,6 +471,7 @@ def _pipeline_history(session, version_id, limit=20):
             "duration_ms": _duration_ms(min(started), max(completed)) if started and completed else None,
             "perception": next((item for item in payloads if item["process_type"] == "document_extraction"), None),
             "normalization": next((item for item in payloads if item["process_type"] == "content_normalization"), None),
+            "discovery": next((item for item in payloads if item["process_type"] == "candidate_discovery"), None),
         })
     return history
 
@@ -541,6 +558,34 @@ def _pipeline_inspection(session, version_id, run, kind, offset, limit):
             "offset": offset,
             "limit": limit,
         }
+    if kind == "discovery":
+        payload = CandidateDiscoveryReadService(session).list_candidates(
+            run.id,
+            limit=limit,
+            offset=offset,
+        )
+        if payload is None:
+            return None
+        items = []
+        for item in payload["items"]:
+            item = {
+                key: str(value) if isinstance(value, UUID) else value
+                for key, value in item.items()
+            }
+            content = item.get("unit_content") or ""
+            start, end = item.get("start_offset"), item.get("end_offset")
+            if isinstance(start, int) and isinstance(end, int) and 0 <= start <= end <= len(content):
+                item["highlight_before"] = content[:start]
+                item["highlight_text"] = content[start:end]
+                item["highlight_after"] = content[end:]
+            items.append(item)
+        return {
+            "kind": kind,
+            "items": items,
+            "total": payload["total"],
+            "offset": payload["offset"],
+            "limit": payload["limit"],
+        }
     return None
 
 
@@ -575,6 +620,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
         process_types = {
             "document_extraction": "document_extraction",
             "normalization": "content_normalization",
+            "entity_discovery": "candidate_discovery",
         }
         selected_by_capability = {
             capability: binding
@@ -585,7 +631,11 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
             binding = selected_by_capability.get(capability)
             component = binding.to_dict() if binding else None
             if binding is None:
-                status = "DISPONIBLE — NON SÉLECTIONNÉE"
+                status = (
+                    "EXÉCUTABLE — NON SÉLECTIONNÉE"
+                    if any(runtime_registry.has(*definition.identity) for definition in registry.for_capability(capability))
+                    else "DISPONIBLE — NON SÉLECTIONNÉE"
+                )
             elif runtime_registry.has(binding.component_key, binding.component_version):
                 status = "EXÉCUTABLE"
             else:
@@ -619,6 +669,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                     "duration_ms": _duration_ms(min(started), max(completed)) if started and completed else None,
                     "perception": next((item for item in run_payloads if item["process_type"] == "document_extraction"), None),
                     "normalization": next((item for item in run_payloads if item["process_type"] == "content_normalization"), None),
+                    "discovery": next((item for item in run_payloads if item["process_type"] == "candidate_discovery"), None),
                 }
                 normalization_run = next((run for run in group_runs if run.process_type == "content_normalization" and run.status == "completed"), None)
                 production_run = session.exec(
@@ -647,7 +698,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                         "available": False,
                         "message": "Aucune référence P comparable disponible.",
                     }
-                if inspect in {"perception", "normalization"}:
+                if inspect in {"perception", "normalization", "discovery"}:
                     target = result.get(inspect)
                     if target:
                         target["inspection"] = _pipeline_inspection(
@@ -669,7 +720,11 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
         for capability in registry.capabilities:
             binding = selected_by_capability.get(capability)
             if binding is None:
-                status = "DISPONIBLE — NON SÉLECTIONNÉE"
+                status = (
+                    "EXÉCUTABLE — NON SÉLECTIONNÉE"
+                    if any(runtime_registry.has(*definition.identity) for definition in registry.for_capability(capability))
+                    else "DISPONIBLE — NON SÉLECTIONNÉE"
+                )
             elif runtime_registry.has(binding.component_key, binding.component_version):
                 status = "EXÉCUTABLE"
             else:
@@ -796,7 +851,7 @@ def rag_laboratory_pipeline(request):
                              if binding.enabled and capability in binding.capabilities),
                             None,
                         )
-                        for capability in ("document_extraction", "normalization")
+                        for capability in ("document_extraction", "normalization", "entity_discovery")
                     }
                     wired = {
                         capability: binding is not None
@@ -808,7 +863,11 @@ def rag_laboratory_pipeline(request):
                             execution_messages.append(
                                 f"{', '.join(binding.capabilities)} sélectionnée(s) avec {binding.component_key}@{binding.component_version} : CONNU — NON RACCORDÉ."
                             )
-                    if wired["document_extraction"] and wired["normalization"]:
+                    if (
+                        wired["document_extraction"]
+                        and wired["normalization"]
+                        and (selected["entity_discovery"] is None or wired["entity_discovery"])
+                    ):
                         runner.execute_document_pipeline(
                             session,
                             manifest=manifest,
@@ -837,7 +896,30 @@ def rag_laboratory_pipeline(request):
                                     perception_processing_run_id=perception_result.processing_run_id,
                                     execution_context=execution_context,
                                 )
-                    if not selected["document_extraction"] and not selected["normalization"]:
+                        if wired["entity_discovery"]:
+                            if perception_result is None or not wired["normalization"]:
+                                execution_messages.append(
+                                    "entity_discovery ne peut pas démarrer : document_extraction et normalization doivent être exécutables."
+                                )
+                            else:
+                                normalization_run = session.exec(
+                                    select(ProcessingRun)
+                                    .where(
+                                        ProcessingRun.document_version_id == version.id,
+                                        ProcessingRun.process_type == "content_normalization",
+                                        ProcessingRun.execution_group_id == execution_context.execution_group_id,
+                                    )
+                                    .order_by(ProcessingRun.started_at.desc())
+                                ).first()
+                                if normalization_run is not None:
+                                    runner.execute_entity_discovery(
+                                        session,
+                                        manifest=manifest,
+                                        document_version_id=version.id,
+                                        normalization_processing_run_id=normalization_run.id,
+                                        execution_context=execution_context,
+                                    )
+                    if not any(selected.values()):
                         execution_messages.append("Aucune étape exécutable sélectionnée dans Pipeline_A.")
                 session.commit()
                 status = 200
@@ -848,6 +930,7 @@ def rag_laboratory_pipeline(request):
                     session,
                     version_id=version.id,
                     group_id=execution_context.execution_group_id,
+                    selection=selection,
                 )
                 state["execution_error"] = "L’exécution a échoué. Consultez les détails techniques du run."
                 state["technical_error"] = str(error)

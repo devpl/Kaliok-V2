@@ -392,6 +392,9 @@ document.addEventListener("DOMContentLoaded", () => {
       pipelineText(details, "summary", "Configuration");
       if (editable) {
         pipelineText(details, "p", "Éditeur JSON validé côté serveur.", "help");
+        if (binding.definition?.configuration_schema && Object.keys(binding.definition.configuration_schema).length) {
+          appendTechnicalDetails(details, [["configuration_schema", JSON.stringify(binding.definition.configuration_schema)]]);
+        }
         const textarea = document.createElement("textarea");
         textarea.dataset.pipelineConfig = binding.binding_key;
         textarea.rows = 5;
@@ -479,7 +482,7 @@ document.addEventListener("DOMContentLoaded", () => {
         inspect.className = "secondary";
         inspect.dataset.pipelineInspect = stage.key;
         inspect.dataset.pipelineGroup = last.execution_group_id;
-        pipelineText(inspect, "span", "Inspecter");
+        pipelineText(inspect, "span", stage.key === "entity_discovery" ? "Inspecter les candidats" : "Inspecter");
         run.append(inspect);
       }
       row.append(identity, run);
@@ -520,6 +523,17 @@ document.addEventListener("DOMContentLoaded", () => {
         pipelineText(card, "p", item.content);
         pipelineText(card, "small", `${item.method || "Méthode inconnue"} · ${item.engine || "Moteur inconnu"}${item.confidence == null ? "" : ` · confiance ${item.confidence}`}`, "muted");
         appendTechnicalDetails(card, [["bbox", item.bbox ? JSON.stringify(item.bbox) : "Non renseignée"], ["ContentBlock UUID", item.id]]);
+      } else if (inspection.kind === "discovery") {
+        pipelineText(card, "strong", `${item.raw_value || item.normalized_value || "Candidat"} · ${item.candidate_type}`);
+        pipelineText(card, "p", item.exact_text || item.raw_value || "");
+        pipelineText(card, "small", `Page ${item.page_number} · ${item.detector_key}@${item.detector_version}${item.confidence == null ? "" : ` · confiance ${item.confidence}`}`, "muted");
+        appendTechnicalDetails(card, [
+          ["NormalizedContentUnit UUID", item.normalized_content_unit_id],
+          ["ContentBlock UUID", item.content_block_id],
+          ["Fragment UUID", item.content_block_fragment_id],
+          ["Offsets", `${item.start_offset}–${item.end_offset}`],
+          ["Source", item.unit_content],
+        ]);
       } else {
         pipelineText(card, "strong", `Unité ${item.order} · ${item.content_type}`);
         pipelineText(card, "p", item.content);
@@ -561,8 +575,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const inspect = document.createElement("button");
       inspect.type = "button";
       inspect.className = "secondary";
-      inspect.dataset.pipelineInspect = label.toLowerCase().startsWith("perception") ? "perception" : "normalization";
-      pipelineText(inspect, "span", label.toLowerCase().startsWith("perception") ? "Inspecter les ContentBlocks" : "Inspecter les NormalizedContentUnits");
+      const lowerLabel = label.toLowerCase();
+      const inspectKind = lowerLabel.startsWith("perception") ? "perception" : lowerLabel.startsWith("discovery") ? "discovery" : "normalization";
+      inspect.dataset.pipelineInspect = inspectKind;
+      pipelineText(inspect, "span", inspectKind === "perception" ? "Inspecter les ContentBlocks" : inspectKind === "discovery" ? "Inspecter les candidats" : "Inspecter les NormalizedContentUnits");
       section.append(inspect);
       if (run.inspection) renderPipelineInspection(section, run.inspection);
       appendTechnicalDetails(section, [["ProcessingRun UUID", run.id], ["execution_environment", run.execution_environment], ["execution_group_id", run.execution_group_id], ["configuration", JSON.stringify(run.configuration || {})], ["metrics", JSON.stringify(run.metrics || {})]]);
@@ -587,6 +603,7 @@ document.addEventListener("DOMContentLoaded", () => {
     runs.className = "pipeline-runs";
     renderPipelineRun(runs, result.perception, "Perception");
     renderPipelineRun(runs, result.normalization, "Normalisation");
+    if (result.discovery) renderPipelineRun(runs, result.discovery, "Discovery");
     container.append(runs);
     appendTechnicalDetails(container, [["execution_group_id", result.execution_group_id]]);
     if (state.execution_error) pipelineText(container, "p", state.execution_error, "alert error");

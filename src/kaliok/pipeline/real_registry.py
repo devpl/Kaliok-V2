@@ -44,8 +44,41 @@ def build_kaliok_component_registry() -> ComponentRegistry:
                 component_key="kaliok-candidate-discovery",
                 version="candidate-discovery-v1",
                 provides=("entity_discovery",),
+                configuration_schema={
+                    "type": "object",
+                    "required": ["detectors"],
+                    "properties": {
+                        "detectors": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "required": ["terms"],
+                                "properties": {
+                                    "key": {"const": "lexical_dictionary"},
+                                    "version": {"const": "1"},
+                                    "terms": {
+                                        "type": "array",
+                                        "minItems": 1,
+                                        "items": {
+                                            "type": "object",
+                                            "required": ["value", "candidate_type"],
+                                        },
+                                    },
+                                    "case_sensitive": {"type": "boolean"},
+                                    "boundary_policy": {
+                                        "enum": ["unicode_word", "substring"],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
                 metadata={
                     "implementation": "kaliok.discovery.CandidateDiscoveryService",
+                    "configuration_note": (
+                        "Détecteurs et termes explicites requis; aucun dictionnaire implicite."
+                    ),
                 },
             ),
             ComponentDefinition(
