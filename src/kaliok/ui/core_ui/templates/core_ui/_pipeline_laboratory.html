@@ -40,7 +40,7 @@
       <div class="pipeline-capability-list" data-pipeline-capabilities>
         {% for capability in pipeline_lab.capabilities %}
           <article class="pipeline-capability" data-capability-row data-capability="{{ capability.key }}">
-            <div class="pipeline-capability-head"><div><strong>{{ capability.key }}</strong><span class="help">Étape {{ forloop.counter }}</span></div><span class="status-label" data-capability-status>{{ capability.status }}</span></div>
+            <div class="pipeline-capability-head"><div><strong>{% if capability.selected_component %}{{ capability.selected_component.display_name }}{% else %}Aucun intervenant sélectionné{% endif %}</strong><span class="help">Étape {{ forloop.counter }} · {{ capability.role_label }}</span></div><span class="status-label" data-capability-status>{{ capability.status }}</span></div>
             <label>Composant sélectionné
               <select data-capability-select data-capability="{{ capability.key }}">
                 <option value="">Aucun composant sélectionné</option>
@@ -59,14 +59,14 @@
         <p class="eyebrow">Pipeline de référence · lecture seule</p><h3>Pipeline_P</h3>
         <p class="help">{{ pipeline_lab.pipeline_reference.description }}</p>
         <p><span class="badge">Description partielle · {{ pipeline_lab.pipeline_reference.revision }}</span></p>
-        {% for binding in pipeline_lab.pipeline_reference.bindings %}<div class="pipeline-binding"><strong>{{ binding.binding_key }}</strong><span>{{ binding.component_key }}@{{ binding.component_version }}</span><small>{{ binding.capabilities|join:", " }}</small></div>{% endfor %}
+        {% for binding in pipeline_lab.pipeline_reference.bindings %}<div class="pipeline-binding"><strong>{{ binding.display_name }}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>Rôles couverts par cet intervenant</small><details><summary>Détails techniques</summary><dl class="technical-list"><dt>binding_key</dt><dd>{{ binding.binding_key }}</dd><dt>component_key</dt><dd>{{ binding.component_key }}</dd><dt>capabilities</dt><dd>{{ binding.capabilities|join:", " }}</dd></dl></details></div>{% endfor %}
         <details><summary>Détails techniques</summary><dl class="technical-list"><dt>pipeline_key</dt><dd>{{ pipeline_lab.pipeline_reference.pipeline_key }}</dd><dt>revision</dt><dd>{{ pipeline_lab.pipeline_reference.revision }}</dd><dt>manifest_hash</dt><dd>{{ pipeline_lab.pipeline_reference.manifest_hash }}</dd></dl></details>
       </article>
       <article class="card" data-pipeline-experiment>
         <p class="eyebrow">Manifest courant · construit par le serveur</p><h3>Pipeline_A</h3>
         <p class="help">Un composant couvrant plusieurs capabilities apparaît ici comme un seul binding.</p>
         <p><span class="badge">{{ pipeline_lab.pipeline_experiment.revision }}</span></p>
-        {% for binding in pipeline_lab.pipeline_experiment.bindings %}<div class="pipeline-binding"><strong>{{ binding.binding_key }}{% if not binding.enabled %} · désactivé{% endif %}</strong><span>{{ binding.component_key }}@{{ binding.component_version }}</span><small>couvre : {{ binding.capabilities|join:", " }}</small><details><summary>Configuration</summary><pre>{{ binding.configuration }}</pre></details></div>{% empty %}<p class="muted">Aucun binding sélectionné.</p>{% endfor %}
+        {% for binding in pipeline_lab.pipeline_experiment.bindings %}<div class="pipeline-binding"><strong>{{ binding.display_name }}{% if not binding.enabled %} · désactivé{% endif %}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>Rôles couverts par cet intervenant</small><details><summary>Configuration</summary><pre>{{ binding.configuration }}</pre></details></div>{% empty %}<p class="muted">Aucun binding sélectionné.</p>{% endfor %}
         <details><summary>Détails manifest</summary><dl class="technical-list"><dt>pipeline_key</dt><dd>{{ pipeline_lab.pipeline_experiment.pipeline_key }}</dd><dt>revision</dt><dd>{{ pipeline_lab.pipeline_experiment.revision }}</dd><dt>manifest_hash</dt><dd>{{ pipeline_lab.pipeline_experiment.manifest_hash }}</dd></dl></details>
       </article>
     </div>
@@ -74,17 +74,9 @@
     <article class="card">
       <div class="section-head"><div><p class="eyebrow">État des bindings</p><h3>Disponibilité de chaque capability</h3></div><span class="help">Les résultats et artefacts ne sont chargés qu’à l’inspection.</span></div>
       <div class="pipeline-stage-list" data-pipeline-stages>
-        {% for stage in pipeline_lab.stages %}<div class="pipeline-stage"><div><strong>{{ stage.capability }}</strong><span class="help">{{ stage.status }}</span></div><div>{% if stage.component %}<span>{{ stage.component.component_key }}@{{ stage.component.component_version }}</span>{% else %}<span class="muted">Aucun composant sélectionné</span>{% endif %}<small>{% if stage.last_run %}Dernier run : {{ stage.last_run.status }} · {{ stage.last_run.artifact_count|default:"—" }} artefact{{ stage.last_run.artifact_count|pluralize }}{% else %}Aucun run chargé{% endif %}</small>{% if stage.last_run.execution_environment == "experiment" %}<button type="button" class="secondary" data-pipeline-inspect="{{ stage.key }}" data-pipeline-group="{{ stage.last_run.execution_group_id }}">Inspecter</button>{% endif %}</div></div>{% empty %}<p class="muted">Aucun étage connu.</p>{% endfor %}
+        {% for stage in pipeline_lab.stages %}<div class="pipeline-stage"><div><strong>{% if stage.component %}{{ stage.component.display_name }}{% else %}Aucun intervenant sélectionné{% endif %}</strong><span class="help">{{ stage.role_label }} · {{ stage.status }}</span></div><div>{% if stage.component %}<span>{{ stage.role_label }}</span>{% else %}<span class="muted">Choisir un intervenant dans Pipeline_A</span>{% endif %}<small>{% if stage.last_run %}Dernier run : {{ stage.last_run.status }} · {{ stage.last_run.artifact_count|default:"—" }} artefact{{ stage.last_run.artifact_count|pluralize }}{% else %}Aucun run chargé{% endif %}</small>{% if stage.last_run.execution_environment == "experiment" %}<button type="button" class="secondary" data-pipeline-inspect="{{ stage.key }}" data-pipeline-group="{{ stage.last_run.execution_group_id }}">Inspecter</button>{% endif %}</div></div>{% empty %}<p class="muted">Aucun étage connu.</p>{% endfor %}
       </div>
     </article>
 
-    <article class="card" data-pipeline-result>
-      <p class="eyebrow">Résultats Pipeline_A courant</p><h3>Prêt à inspecter</h3><p class="muted">Lancez les étapes exécutables pour voir les ProcessingRuns, ContentBlocks et NormalizedContentUnits.</p>
-    </article>
-
-    <article class="card">
-      <div class="section-head"><div><p class="eyebrow">Historique expérimental</p><h3>Exécutions du document</h3></div><span class="help">Historique Pipeline_A, séparé des anciennes analyses du Lab.</span></div>
-      <div data-pipeline-history>{% for item in pipeline_lab.history %}<button type="button" class="history-card pipeline-history-button" data-pipeline-history="{{ item.execution_group_id }}"><span>{{ item.started_at|default:"Date inconnue" }} · {{ item.pipeline_key }} / {{ item.revision }}</span><span class="badge {{ item.status }}">{{ item.status }}</span></button>{% empty %}<p class="muted">Aucune exécution expérimentale disponible.</p>{% endfor %}</div>
-    </article>
   {% endif %}
 </section>

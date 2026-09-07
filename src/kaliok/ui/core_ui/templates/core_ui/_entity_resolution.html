@@ -1,4 +1,4 @@
-<section data-panel="entity_resolution" data-async-url="{% url 'rag_laboratory_data' %}" data-run="{{ selected_entity_resolution_run_id|default:'' }}" {% if active_tab != 'entity_resolution' %}hidden{% endif %} class="entity-resolution-panel">
+<section data-panel="entity_resolution" data-async-url="{% url 'rag_laboratory_data' %}" data-run="{{ selected_entity_resolution_run_id|default:'' }}" class="entity-resolution-panel">
   <div class="discovery-heading"><div><p class="eyebrow">Rapprochements proposés</p><h2>Résolution d’entités</h2><p class="lead">Explorez les rapprochements proposés entre occurrences documentaires. Ils ne constituent pas des identités certaines.</p></div></div>
   <p class="async-status" data-async-status role="status" aria-live="polite"></p>
   {% if entity_resolution_runs %}

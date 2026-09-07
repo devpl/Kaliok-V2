@@ -313,6 +313,8 @@ def _pipeline_manifest_payload(manifest, registry):
         definition = registry.get(binding.component_key, binding.component_version)
         bindings.append({
             **binding.to_dict(),
+            "display_name": _pipeline_component_display_name(binding.component_key, binding.component_version),
+            "role_labels": [_pipeline_role_label(capability) for capability in binding.capabilities],
             "definition": definition.to_dict() if definition else None,
         })
     return {
@@ -325,10 +327,38 @@ def _pipeline_manifest_payload(manifest, registry):
     }
 
 
+_PIPELINE_ROLE_LABELS = {
+    "document_extraction": "Lecture du document",
+    "normalization": "Structuration du contenu",
+    "entity_discovery": "Découverte d’entités",
+    "entity_resolution": "Résolution d’entités",
+    "chunking": "Découpage sémantique",
+    "indexing": "Indexation",
+}
+
+
+def _pipeline_role_label(capability):
+    return _PIPELINE_ROLE_LABELS.get(capability, capability)
+
+
+def _pipeline_component_display_name(component_key, version):
+    known = {
+        "kaliok-reader": "Kaliok Reader",
+        "kaliok-normalizer": "Kaliok Normalizer",
+        "kaliok-candidate-discovery": "Kaliok Candidate Discovery",
+        "kaliok-entity-resolution": "Kaliok Entity Resolution",
+        "kaliok-semantic-chunker": "Kaliok Semantic Chunker",
+        "postgres-normalized-index": "PostgreSQL Normalized Index",
+    }
+    label = known.get(component_key, component_key.replace("-", " ").title())
+    return f"{label} {version}".strip()
+
+
 def _pipeline_components_payload(registry, runtime_registry):
     payload = []
     for definition in registry.definitions:
         item = definition.to_dict()
+        item["display_name"] = _pipeline_component_display_name(definition.component_key, definition.version)
         executable = runtime_registry.has(*definition.identity)
         item["runtime_status"] = "EXECUTABLE" if executable else "CONNU — NON RACCORDÉ"
         item["runtime_executable"] = executable
@@ -361,12 +391,20 @@ def _pipeline_capabilities_payload(registry, runtime_registry, manifest):
             status = "CONNU — NON RACCORDÉ"
         capabilities.append({
             "key": capability,
+            "role_label": _pipeline_role_label(capability),
             "status": status,
             "selected_binding_key": selected.binding_key if selected else None,
-            "selected_component": selected.to_dict() if selected else None,
+            "selected_component": {
+                **selected.to_dict(),
+                "display_name": _pipeline_component_display_name(
+                    selected.component_key,
+                    selected.component_version,
+                ),
+            } if selected else None,
             "components": [
                 {
                     **definition.to_dict(),
+                    "display_name": _pipeline_component_display_name(definition.component_key, definition.version),
                     "runtime_status": "EXECUTABLE" if runtime_registry.has(*definition.identity) else "CONNU — NON RACCORDÉ",
                     "runtime_executable": runtime_registry.has(*definition.identity),
                 }
@@ -629,7 +667,13 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
         }
         for capability in registry.capabilities:
             binding = selected_by_capability.get(capability)
-            component = binding.to_dict() if binding else None
+            component = {
+                **binding.to_dict(),
+                "display_name": _pipeline_component_display_name(
+                    binding.component_key,
+                    binding.component_version,
+                ),
+            } if binding else None
             if binding is None:
                 status = (
                     "EXÉCUTABLE — NON SÉLECTIONNÉE"
@@ -641,11 +685,12 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
             else:
                 status = "CONNU — NON RACCORDÉ"
             process_type = process_types.get(capability)
-            run = latest.get(process_type) if process_type else None
+            run = latest.get(process_type) if process_type and binding is not None else None
             stages.append({
                 "key": capability,
                 "capability": capability,
                 "component": component,
+                "role_label": _pipeline_role_label(capability),
                 "status": status,
                 "last_run": _run_payload(session, run, include_configuration=False) if run else None,
             })
@@ -733,6 +778,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                 "key": capability,
                 "capability": capability,
                 "component": binding.to_dict() if binding else None,
+                "role_label": _pipeline_role_label(capability),
                 "status": status,
                 "last_run": None,
             })
@@ -954,7 +1000,7 @@ def rag_laboratory(request):
     selected_suite_id = request.POST.get("suite_id") or request.GET.get("suite")
     selected_attempt_id = request.GET.get("attempt")
     selected_campaign_id = request.GET.get("campaign")
-    active_tab = request.GET.get("tab", "experiment")
+    active_tab = request.GET.get("tab", "pipeline")
     notice = None
     action_error = None
     run_result = None

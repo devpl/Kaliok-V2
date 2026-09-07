@@ -1,7 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
   const tabs = [...document.querySelectorAll("[data-tab]")];
   const serverTabs = [...document.querySelectorAll(".tabs a.tab-button")];
-  const panels = [...document.querySelectorAll("[data-panel]")];
+  const panels = [...document.querySelectorAll("[data-lab-panel]")];
   function showTab(name) {
     tabs.forEach((tab) => {
       const active = tab.dataset.tab === name;
@@ -14,7 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
       tab.classList.add("is-inactive");
       tab.setAttribute("aria-current", "false");
     });
-    panels.forEach((panel) => { panel.hidden = panel.dataset.panel !== name; });
+    panels.forEach((panel) => { panel.hidden = panel.dataset.labPanel !== name; });
   }
   tabs.forEach((tab) => tab.addEventListener("click", () => showTab(tab.dataset.tab)));
   serverTabs.forEach((tab) => tab.addEventListener("click", (event) => {
@@ -25,6 +25,31 @@ document.addEventListener("DOMContentLoaded", () => {
       window.history.replaceState({}, "", tab.href);
     }
   }));
+
+  const historicalRoot = document.querySelector('[data-lab-panel="historical_tools"]');
+  const historicalPanels = [...(historicalRoot?.querySelectorAll("[data-historical-panel]") || [])];
+  const legacyPanels = [...(historicalRoot?.querySelectorAll("[data-panel]") || [])];
+  const historicalTools = [...(historicalRoot?.querySelectorAll("[data-historical-tool]") || [])];
+  function showHistoricalTool(name) {
+    historicalTools.forEach((tool) => {
+      const active = tool.dataset.historicalTool === name;
+      tool.classList.toggle("is-active", active);
+      tool.classList.toggle("is-inactive", !active);
+      tool.setAttribute("aria-selected", String(active));
+    });
+    historicalPanels.forEach((panel) => { panel.hidden = panel.dataset.historicalPanel !== name; });
+    legacyPanels.forEach((panel) => {
+      if (["results", "history", "settings"].includes(panel.dataset.panel)) {
+        panel.hidden = panel.dataset.panel !== name;
+      } else if (["discovery", "entity_resolution", "experiment"].includes(panel.dataset.panel)) {
+        panel.hidden = false;
+      }
+    });
+  }
+  historicalTools.forEach((tool) => tool.addEventListener("click", () => showHistoricalTool(tool.dataset.historicalTool)));
+  const initialNavigation = document.querySelector("[data-lab-navigation]");
+  showTab(initialNavigation?.dataset.initialTab || "pipeline");
+  showHistoricalTool(initialNavigation?.dataset.initialTool || "experiment");
 
   const revisions = [...document.querySelectorAll('input[name="configuration_revision_ids"]')];
   const repetitions = document.querySelector('#id_repetitions');
@@ -335,6 +360,40 @@ document.addEventListener("DOMContentLoaded", () => {
   const configStatus = pipelineRoot?.querySelector("[data-pipeline-config-status]");
   const pipelineRunButton = pipelineRoot?.querySelector("[data-pipeline-run]");
   let pipelineSelection = [];
+  const pipelineRoleLabels = Object.freeze({
+    document_extraction: "Lecture du document",
+    normalization: "Structuration du contenu",
+    entity_discovery: "Découverte d’entités",
+    entity_resolution: "Résolution d’entités",
+    chunking: "Découpage sémantique",
+    indexing: "Indexation",
+  });
+
+  function pipelineRole(capability) {
+    return pipelineRoleLabels[capability] || capability;
+  }
+
+  function componentTitle(component) {
+    if (!component?.component_key) return "Aucun intervenant sélectionné";
+    if (component.display_name) return component.display_name;
+    const label = component.component_key
+      .replace(/^kaliok-/, "Kaliok ")
+      .replace(/^postgres-/, "PostgreSQL ")
+      .replace(/-/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    return `${label} ${component.version || component.component_version || ""}`.trim();
+  }
+
+  function groupByComponent(items, getComponent) {
+    const groups = new Map();
+    items.forEach((item) => {
+      const component = getComponent(item);
+      const key = component?.component_key ? `${component.component_key}@@${component.component_version || component.version}` : `none@@${item.key || item.capability}`;
+      if (!groups.has(key)) groups.set(key, { component, items: [] });
+      groups.get(key).items.push(item);
+    });
+    return [...groups.values()];
+  }
 
   function initializePipelineSelection() {
     const grouped = new Map();
@@ -385,9 +444,9 @@ document.addEventListener("DOMContentLoaded", () => {
     (manifest.bindings || []).forEach((binding) => {
       const row = document.createElement("div");
       row.className = "pipeline-binding";
-      pipelineText(row, "strong", `${binding.binding_key}${binding.enabled === false ? " · désactivé" : ""}`);
-      pipelineText(row, "span", `${binding.component_key}@${binding.component_version}`);
-      pipelineText(row, "small", `couvre : ${(binding.capabilities || []).join(", ")}`);
+      pipelineText(row, "strong", `${componentTitle({ component_key: binding.component_key, version: binding.component_version })}${binding.enabled === false ? " · désactivé" : ""}`);
+      pipelineText(row, "span", (binding.role_labels || binding.capabilities || []).map((role) => typeof role === "string" && pipelineRoleLabels[role] ? pipelineRole(role) : role).join(" · "));
+      pipelineText(row, "small", "Rôles couverts par cet intervenant");
       const details = document.createElement("details");
       pipelineText(details, "summary", "Configuration");
       if (editable) {
@@ -413,6 +472,12 @@ document.addEventListener("DOMContentLoaded", () => {
         pipelineText(toggle, "span", binding.enabled === false ? "Activer le binding" : "Désactiver le binding");
         details.append(toggle);
       } else pipelineText(details, "pre", JSON.stringify(binding.configuration || {}, null, 2));
+      appendTechnicalDetails(details, [
+        ["binding_key", binding.binding_key],
+        ["component_key", binding.component_key],
+        ["component_version", binding.component_version],
+        ["capabilities", (binding.capabilities || []).join(", ")],
+      ]);
       row.append(details);
       container.append(row);
     });
@@ -426,38 +491,81 @@ document.addEventListener("DOMContentLoaded", () => {
     const container = pipelineRoot?.querySelector("[data-pipeline-capabilities]");
     if (!container) return;
     container.replaceChildren();
-    (state.capabilities || []).forEach((capability, index) => {
+    const selected = (state.capabilities || []).filter((capability) => capability.selected_component);
+    const unselected = (state.capabilities || []).filter((capability) => !capability.selected_component);
+    const groups = groupByComponent(selected, (capability) => capability.selected_component);
+    groups.forEach((group, index) => {
       const article = document.createElement("article");
       article.className = "pipeline-capability";
       article.dataset.capabilityRow = "";
-      article.dataset.capability = capability.key;
+      article.dataset.component = group.component.component_key;
       const head = document.createElement("div");
       head.className = "pipeline-capability-head";
       const name = document.createElement("div");
-      pipelineText(name, "strong", capability.key);
+      pipelineText(name, "strong", componentTitle(group.component));
       pipelineText(name, "span", `Étape ${index + 1}`, "help");
-      pipelineText(head, "span", capability.status, "status-label");
+      pipelineText(head, "span", group.items.map((item) => item.status).every((status) => status === "EXÉCUTABLE") ? "EXÉCUTABLE" : group.items[0].status, "status-label");
       head.prepend(name);
       article.append(head);
+      const roles = document.createElement("ul");
+      roles.className = "pipeline-role-list";
+      group.items.forEach((capability) => {
+        const role = document.createElement("li");
+        pipelineText(role, "strong", capability.role_label || pipelineRole(capability.key));
+        roles.append(role);
+      });
+      article.append(roles);
+      pipelineText(article, "p", `Binding ${group.items[0].selected_binding_key || "—"}`, "help");
+      const chooser = document.createElement("details");
+      pipelineText(chooser, "summary", "Modifier les rôles");
+      group.items.forEach((capability) => {
+        const label = document.createElement("label");
+        pipelineText(label, "span", capability.role_label || pipelineRole(capability.key));
+        const select = document.createElement("select");
+        select.dataset.capabilitySelect = "";
+        select.dataset.capability = capability.key;
+        (capability.components || []).forEach((component) => {
+          const option = document.createElement("option");
+          option.value = `${component.component_key}@@${component.version}`;
+          option.textContent = `${componentTitle(component)} · ${component.runtime_status}`;
+          if (capability.selected_component.component_key === component.component_key && capability.selected_component.component_version === component.version) option.selected = true;
+          select.append(option);
+        });
+        label.append(select);
+        chooser.append(label);
+      });
+      article.append(chooser);
+      appendTechnicalDetails(article, [["capabilities", group.items.map((item) => item.key).join(", ")]]);
+      container.append(article);
+    });
+    unselected.forEach((capability, index) => {
+      const article = document.createElement("article");
+      article.className = "pipeline-capability pipeline-capability-unselected";
+      const head = document.createElement("div");
+      head.className = "pipeline-capability-head";
+      const name = document.createElement("div");
+      pipelineText(name, "strong", "Aucun intervenant sélectionné");
+      pipelineText(name, "span", `Étape ${selected.length + index + 1} · ${pipelineRole(capability.key)}`, "help");
+      head.append(name);
+      pipelineText(head, "span", capability.status, "status-label");
+      article.append(head);
       const label = document.createElement("label");
-      pipelineText(label, "span", "Composant sélectionné");
+      pipelineText(label, "span", "Choisir l’intervenant");
       const select = document.createElement("select");
       select.dataset.capabilitySelect = "";
       select.dataset.capability = capability.key;
       const empty = document.createElement("option");
       empty.value = "";
-      empty.textContent = "Aucun composant sélectionné";
+      empty.textContent = "Aucun intervenant sélectionné";
       select.append(empty);
       (capability.components || []).forEach((component) => {
         const option = document.createElement("option");
         option.value = `${component.component_key}@@${component.version}`;
-        option.textContent = `${component.component_key} @ ${component.version} · ${component.runtime_status}`;
-        if (capability.selected_component && capability.selected_component.component_key === component.component_key && capability.selected_component.component_version === component.version) option.selected = true;
+        option.textContent = `${componentTitle(component)} · ${component.runtime_status}`;
         select.append(option);
       });
       label.append(select);
       article.append(label);
-      pipelineText(article, "p", capability.selected_binding_key ? `Binding ${capability.selected_binding_key}. Ce binding peut couvrir d’autres capabilities.` : "Capability disponible mais non sélectionnée.", "help");
       container.append(article);
     });
   }
@@ -465,18 +573,18 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderPipelineStages(container, stages) {
     if (!container) return;
     container.replaceChildren();
-    (stages || []).forEach((stage) => {
+    groupByComponent(stages || [], (stage) => stage.component).forEach((group) => {
       const row = document.createElement("div");
       row.className = "pipeline-stage";
       const identity = document.createElement("div");
-      pipelineText(identity, "strong", stage.capability);
-      pipelineText(identity, "span", stage.status, "help");
+      pipelineText(identity, "strong", componentTitle(group.component));
+      pipelineText(identity, "span", group.items.map((stage) => stage.role_label || pipelineRole(stage.capability)).join(" · "), "help");
       const run = document.createElement("div");
-      const component = stage.component || {};
-      pipelineText(run, "span", component.component_key ? `${component.component_key}@${component.component_version}` : "Aucun composant sélectionné");
-      const last = stage.last_run;
-      pipelineText(run, "small", last ? `Dernier run : ${last.status} · ${last.artifact_count ?? "—"} artefact(s)` : "Aucun run chargé");
-      if (last?.execution_environment === "experiment" && last.execution_group_id) {
+      group.items.forEach((stage) => {
+        const last = stage.last_run;
+        pipelineText(run, "span", stage.role_label || pipelineRole(stage.capability));
+        pipelineText(run, "small", last ? `Dernier run : ${last.status} · ${last.artifact_count ?? "—"} artefact(s)` : "Aucun run chargé");
+        if (last?.execution_environment === "experiment" && last.execution_group_id) {
         const inspect = document.createElement("button");
         inspect.type = "button";
         inspect.className = "secondary";
@@ -484,8 +592,10 @@ document.addEventListener("DOMContentLoaded", () => {
         inspect.dataset.pipelineGroup = last.execution_group_id;
         pipelineText(inspect, "span", stage.key === "entity_discovery" ? "Inspecter les candidats" : "Inspecter");
         run.append(inspect);
-      }
+        }
+      });
       row.append(identity, run);
+      appendTechnicalDetails(row, [["capabilities", group.items.map((stage) => stage.capability).join(", ")]]);
       container.append(row);
     });
   }
@@ -587,7 +697,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderPipelineResult(root, state) {
-    const container = root.querySelector("[data-pipeline-result]");
+    const container = document.querySelector("[data-pipeline-result]");
     if (!container) return;
     const result = state.result;
     container.replaceChildren();
@@ -640,7 +750,7 @@ document.addEventListener("DOMContentLoaded", () => {
     renderPipelineManifest(pipelineRoot.querySelector("[data-pipeline-reference]"), state.pipeline_reference, "Pipeline_P", "Pipeline de référence");
     renderPipelineManifest(pipelineRoot.querySelector("[data-pipeline-experiment]"), state.pipeline_experiment, "Pipeline_A", "Manifest courant · construit par le serveur", true);
     renderPipelineStages(pipelineRoot.querySelector("[data-pipeline-stages]"), state.stages);
-    renderPipelineHistory(pipelineRoot.querySelector("[data-pipeline-history]"), state.history);
+    renderPipelineHistory(document.querySelector("[data-pipeline-history]"), state.history);
     renderPipelineResult(pipelineRoot, state);
     if (pipelineRunButton) pipelineRunButton.disabled = !state.selected_document?.executable;
   }
@@ -718,7 +828,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const select = event.target.closest("[data-capability-select]");
     if (select) changeCapability(select.dataset.capability, select.value);
   });
-  pipelineRoot?.addEventListener("click", async (event) => {
+  document.addEventListener("click", async (event) => {
+    if (!pipelineRoot || (!pipelineRoot.contains(event.target) && !event.target.closest("[data-pipeline-result], [data-pipeline-history]"))) return;
     const historyButton = event.target.closest("[data-pipeline-history]");
     const inspectButton = event.target.closest("[data-pipeline-inspect]");
     const moreButton = event.target.closest("[data-pipeline-more]");
@@ -747,4 +858,5 @@ document.addEventListener("DOMContentLoaded", () => {
     else if (moreButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: moreButton.dataset.pipelineMore, offset: moreButton.dataset.pipelineOffset, limit: "25" });
   });
   initializePipelineSelection();
+  if (pipelineRoot) loadPipelineState();
 });
