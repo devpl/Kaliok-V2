@@ -81,6 +81,9 @@ class ComponentRuntimeRegistry:
             f"{component_key}@{version}."
         )
 
+    def has(self, component_key: str, version: str) -> bool:
+        return (component_key, version) in self._adapters
+
 
 class KaliokNormalizationAdapter:
     """Adapter real for the existing ContentNormalizationService."""

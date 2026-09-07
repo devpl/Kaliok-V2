@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -8,6 +8,29 @@ from django.conf import settings
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
+from sqlalchemy import func
+from sqlmodel import Session, select
+
+from kaliok.execution import ExecutionContext
+from kaliok.normalization.comparison import ContentNormalizationComparisonService
+from kaliok.pipeline import (
+    ComponentBinding,
+    ManifestExecutionService,
+    PipelineManifest,
+    build_current_production_manifest,
+    build_kaliok_component_registry,
+    build_kaliok_runtime_registry,
+)
+from kaliok.storage.database import create_database_engine
+from kaliok.storage.models import (
+    ContentBlock,
+    Document,
+    DocumentVersion,
+    NormalizedContentUnit,
+    NormalizedContentUnitSource,
+    Page,
+    ProcessingRun,
+)
 
 from .forms import DocumentUploadForm, RagQuestionForm
 
@@ -181,6 +204,667 @@ def _is_unjustified_identical_revision(configurations, source_id, submitted, rea
     )
 
 
+def _pipeline_a_manifest(selection=None, registry=None) -> PipelineManifest:
+    """Build Pipeline_A from the current Web selection.
+
+    The default deliberately remains the current production subset. A Web
+    selection is grouped by component identity so one multi-capability
+    component becomes one manifest binding instead of several fake ones.
+    """
+    production = build_current_production_manifest()
+    if selection in (None, ""):
+        return PipelineManifest(
+            pipeline_key="pipeline-a",
+            revision="experiment-v1",
+            bindings=production.bindings,
+        )
+    if isinstance(selection, dict):
+        selection = selection.get("bindings", [])
+    if not isinstance(selection, (list, tuple)):
+        raise ValueError("La sélection Pipeline_A doit être une liste de bindings.")
+
+    grouped = {}
+    order = []
+    for item in selection:
+        if not isinstance(item, dict):
+            raise ValueError("Chaque binding Pipeline_A doit être un objet JSON.")
+        component_key = str(item.get("component_key", "")).strip()
+        component_version = str(item.get("component_version", "")).strip()
+        if not component_key or not component_version:
+            raise ValueError("Un binding Pipeline_A doit préciser son composant et sa version.")
+        identity = (component_key, component_version)
+        definition = registry.get(*identity) if registry else None
+        capabilities = item.get("capabilities") or (definition.provides if definition else ())
+        if not isinstance(capabilities, (list, tuple)):
+            raise ValueError("Les capabilities d'un binding doivent être une liste.")
+        if identity not in grouped:
+            grouped[identity] = {
+                "binding_key": str(item.get("binding_key") or "").strip(),
+                "component_key": component_key,
+                "component_version": component_version,
+                "capabilities": [],
+                "configuration": item.get("configuration") or {},
+                "dependencies": list(item.get("dependencies") or []),
+                "enabled": bool(item.get("enabled", True)),
+            }
+            order.append(identity)
+        target = grouped[identity]
+        for capability in capabilities:
+            capability = str(capability).strip()
+            if capability and capability not in target["capabilities"]:
+                target["capabilities"].append(capability)
+        target["enabled"] = target["enabled"] and bool(item.get("enabled", True))
+        if item.get("configuration") is not None:
+            target["configuration"] = item["configuration"]
+
+    bindings = []
+    used_keys = set()
+    binding_keys = {}
+    for index, identity in enumerate(order, start=1):
+        candidate = grouped[identity]["binding_key"] or f"binding-{index}"
+        if candidate in used_keys:
+            candidate = f"{candidate}-{index}"
+        used_keys.add(candidate)
+        binding_keys[identity] = candidate
+    for index, identity in enumerate(order, start=1):
+        item = grouped[identity]
+        binding_key = binding_keys[identity]
+        dependencies = list(item["dependencies"])
+        if "normalization" in item["capabilities"] and not dependencies:
+            for previous in order[:index - 1]:
+                if "document_extraction" in grouped[previous]["capabilities"]:
+                    dependency = binding_keys[previous]
+                    if dependency != binding_key:
+                        dependencies.append(dependency)
+                    break
+        bindings.append(ComponentBinding(binding_key=binding_key, **{
+            key: item[key]
+            for key in ("component_key", "component_version", "capabilities", "configuration", "enabled")
+        }, dependencies=dependencies))
+
+    manifest = PipelineManifest(
+        pipeline_key="pipeline-a",
+        revision="experiment-v1",
+        bindings=tuple(bindings),
+    )
+    if registry is not None:
+        manifest.validate(registry)
+    return manifest
+
+
+def _iso(value):
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _duration_ms(started_at, completed_at):
+    if not started_at or not completed_at:
+        return None
+    duration = (completed_at - started_at).total_seconds() * 1000
+    if duration <= 0:
+        return None
+    return round(duration, 3)
+
+
+def _pipeline_manifest_payload(manifest, registry):
+    bindings = []
+    for binding in manifest.bindings:
+        definition = registry.get(binding.component_key, binding.component_version)
+        bindings.append({
+            **binding.to_dict(),
+            "definition": definition.to_dict() if definition else None,
+        })
+    return {
+        **manifest.to_dict(),
+        "manifest_hash": manifest.manifest_hash,
+        "bindings": bindings,
+        "description": "Pipeline de production — description actuellement partielle"
+        if manifest.pipeline_key == "pipeline-p"
+        else "Variante expérimentale construite depuis le sous-ensemble réel de Pipeline_P.",
+    }
+
+
+def _pipeline_components_payload(registry, runtime_registry):
+    payload = []
+    for definition in registry.definitions:
+        item = definition.to_dict()
+        executable = runtime_registry.has(*definition.identity)
+        item["runtime_status"] = "EXECUTABLE" if executable else "CONNU — NON RACCORDÉ"
+        item["runtime_executable"] = executable
+        payload.append(item)
+    return payload
+
+
+def _pipeline_capabilities_payload(registry, runtime_registry, manifest):
+    selected_by_capability = {}
+    for binding in manifest.bindings:
+        for capability in binding.capabilities:
+            selected_by_capability[capability] = binding
+    capabilities = []
+    for capability in registry.capabilities:
+        definitions = registry.for_capability(capability)
+        selected = selected_by_capability.get(capability)
+        if selected is None:
+            status = "DISPONIBLE — NON SÉLECTIONNÉE"
+        elif runtime_registry.has(selected.component_key, selected.component_version):
+            status = "EXÉCUTABLE"
+        else:
+            status = "CONNU — NON RACCORDÉ"
+        capabilities.append({
+            "key": capability,
+            "status": status,
+            "selected_binding_key": selected.binding_key if selected else None,
+            "selected_component": selected.to_dict() if selected else None,
+            "components": [
+                {
+                    **definition.to_dict(),
+                    "runtime_status": "EXECUTABLE" if runtime_registry.has(*definition.identity) else "CONNU — NON RACCORDÉ",
+                    "runtime_executable": runtime_registry.has(*definition.identity),
+                }
+                for definition in definitions
+            ],
+        })
+    return capabilities
+
+
+def _lab_document_payload(version, document):
+    return {
+        "document_id": str(document.id),
+        "document_version_id": str(version.id),
+        "title": document.title or version.filename,
+        "filename": version.filename,
+        "version_number": version.version_number,
+        "processing_status": version.processing_status,
+        "version_status": version.version_status,
+        "page_count": version.page_count,
+        "file_hash_short": (version.file_hash or "")[:12],
+        # This is the same precondition enforced by store_document_perception.
+        "executable": version.page_count is not None,
+    }
+
+
+def _run_pipeline_metadata(run):
+    configuration = run.configuration or {}
+    return configuration.get("pipeline") if isinstance(configuration, dict) else None
+
+
+def _count_run_artifacts(session, run):
+    if run.process_type == "document_extraction":
+        return int(session.exec(
+            select(func.count(ContentBlock.id))
+            .join(Page, ContentBlock.page_id == Page.id)
+            .where(ContentBlock.processing_run_id == run.id)
+        ).one())
+    if run.process_type == "content_normalization":
+        return int(session.exec(
+            select(func.count(NormalizedContentUnit.id)).where(
+                NormalizedContentUnit.processing_run_id == run.id
+            )
+        ).one())
+    return None
+
+
+def _run_payload(session, run, *, include_configuration=True):
+    return {
+        "id": str(run.id),
+        "process_type": run.process_type,
+        "status": run.status,
+        "engine": run.engine,
+        "engine_version": run.engine_version,
+        "execution_environment": run.execution_environment,
+        "execution_group_id": str(run.execution_group_id) if run.execution_group_id else None,
+        "started_at": _iso(run.started_at),
+        "completed_at": _iso(run.completed_at),
+        "duration_ms": _duration_ms(run.started_at, run.completed_at),
+        "metrics": run.metrics or {},
+        "artifact_count": _count_run_artifacts(session, run),
+        "configuration": run.configuration or {} if include_configuration else None,
+        "error": run.error_message,
+        "pipeline_metadata": _run_pipeline_metadata(run),
+    }
+
+
+def _pipeline_history(session, version_id, limit=20):
+    runs = list(session.exec(
+        select(ProcessingRun)
+        .where(
+            ProcessingRun.document_version_id == version_id,
+            ProcessingRun.execution_environment == "experiment",
+            ProcessingRun.execution_group_id.is_not(None),
+        )
+        .order_by(ProcessingRun.started_at.desc())
+    ).all())
+    grouped = {}
+    for run in runs:
+        group_id = str(run.execution_group_id)
+        group = grouped.setdefault(group_id, {"execution_group_id": group_id, "runs": []})
+        group["runs"].append(run)
+    history = []
+    for group in list(grouped.values())[:limit]:
+        group["runs"].sort(key=lambda item: item.started_at or datetime.min.replace(tzinfo=timezone.utc))
+        payloads = [_run_payload(session, run, include_configuration=False) for run in group["runs"]]
+        started = [run.started_at for run in group["runs"] if run.started_at]
+        completed = [run.completed_at for run in group["runs"] if run.completed_at]
+        metadata = next((item.get("pipeline_metadata") for item in payloads if item.get("pipeline_metadata")), {}) or {}
+        history.append({
+            "execution_group_id": group["execution_group_id"],
+            "pipeline_key": metadata.get("pipeline_key", "pipeline-a"),
+            "revision": metadata.get("revision", "experiment-v1"),
+            "status": "failed" if any(item["status"] == "failed" for item in payloads) else "completed",
+            "started_at": _iso(min(started)) if started else None,
+            "completed_at": _iso(max(completed)) if completed else None,
+            "duration_ms": _duration_ms(min(started), max(completed)) if started and completed else None,
+            "perception": next((item for item in payloads if item["process_type"] == "document_extraction"), None),
+            "normalization": next((item for item in payloads if item["process_type"] == "content_normalization"), None),
+        })
+    return history
+
+
+def _pipeline_inspection(session, version_id, run, kind, offset, limit):
+    if kind == "perception":
+        rows = session.exec(
+            select(ContentBlock, Page)
+            .join(Page, ContentBlock.page_id == Page.id)
+            .where(
+                Page.document_version_id == version_id,
+                ContentBlock.processing_run_id == run.id,
+            )
+            .order_by(Page.page_number, ContentBlock.reading_order, ContentBlock.block_index)
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        total = int(session.exec(
+            select(func.count(ContentBlock.id))
+            .join(Page, ContentBlock.page_id == Page.id)
+            .where(Page.document_version_id == version_id, ContentBlock.processing_run_id == run.id)
+        ).one())
+        return {
+            "kind": kind,
+            "items": [{
+                "id": str(block.id),
+                "page": page.page_number,
+                "type": block.block_type,
+                "method": block.extraction_method,
+                "engine": block.extraction_engine,
+                "engine_version": block.extraction_engine_version,
+                "content": block.content,
+                "confidence": block.confidence,
+                "bbox": block.bbox,
+            } for block, page in rows],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+    if kind == "normalization":
+        units = list(session.exec(
+            select(NormalizedContentUnit)
+            .where(
+                NormalizedContentUnit.document_version_id == version_id,
+                NormalizedContentUnit.processing_run_id == run.id,
+            )
+            .order_by(NormalizedContentUnit.unit_index)
+            .offset(offset)
+            .limit(limit)
+        ).all())
+        total = int(session.exec(
+            select(func.count(NormalizedContentUnit.id)).where(
+                NormalizedContentUnit.document_version_id == version_id,
+                NormalizedContentUnit.processing_run_id == run.id,
+            )
+        ).one())
+        unit_ids = [unit.id for unit in units]
+        sources = list(session.exec(
+            select(NormalizedContentUnitSource, ContentBlock, Page)
+            .join(ContentBlock, NormalizedContentUnitSource.content_block_id == ContentBlock.id)
+            .join(Page, ContentBlock.page_id == Page.id)
+            .where(NormalizedContentUnitSource.normalized_content_unit_id.in_(unit_ids))
+            .order_by(NormalizedContentUnitSource.source_order)
+        ).all()) if unit_ids else []
+        sources_by_unit = {}
+        for source, block, page in sources:
+            sources_by_unit.setdefault(str(source.normalized_content_unit_id), []).append({
+                "block_id": str(block.id),
+                "page": page.page_number,
+                "content": block.content,
+                "source_order": source.source_order,
+            })
+        return {
+            "kind": kind,
+            "items": [{
+                "id": str(unit.id),
+                "order": unit.unit_index,
+                "content_type": unit.content_type,
+                "content": unit.content,
+                "source_unit_id": unit.source_unit_id,
+                "sources": sources_by_unit.get(str(unit.id), []),
+            } for unit in units],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+    return None
+
+
+def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None, offset=0, limit=25, selection=None):
+    rows = session.exec(
+        select(DocumentVersion, Document)
+        .join(Document, Document.id == DocumentVersion.document_id)
+        .where(Document.status != "deleted")
+        .order_by(DocumentVersion.created_at.desc(), DocumentVersion.version_number.desc())
+    ).all()
+    documents = [_lab_document_payload(version, document) for version, document in rows]
+    if version_id is None:
+        selected = next((item for item in documents if item["executable"]), None)
+    else:
+        selected = next((item for item in documents if item["document_version_id"] == str(version_id)), None)
+    registry = build_kaliok_component_registry()
+    runtime_registry = build_kaliok_runtime_registry()
+    production = build_current_production_manifest()
+    experimental = _pipeline_a_manifest(selection, registry)
+    result = None
+    if selected:
+        version_id = UUID(selected["document_version_id"])
+        runs = list(session.exec(
+            select(ProcessingRun)
+            .where(ProcessingRun.document_version_id == version_id)
+            .order_by(ProcessingRun.started_at.desc())
+        ).all())
+        latest = {}
+        for run in runs:
+            latest.setdefault(run.process_type, run)
+        stages = []
+        process_types = {
+            "document_extraction": "document_extraction",
+            "normalization": "content_normalization",
+        }
+        selected_by_capability = {
+            capability: binding
+            for binding in experimental.bindings
+            for capability in binding.capabilities
+        }
+        for capability in registry.capabilities:
+            binding = selected_by_capability.get(capability)
+            component = binding.to_dict() if binding else None
+            if binding is None:
+                status = "DISPONIBLE — NON SÉLECTIONNÉE"
+            elif runtime_registry.has(binding.component_key, binding.component_version):
+                status = "EXÉCUTABLE"
+            else:
+                status = "CONNU — NON RACCORDÉ"
+            process_type = process_types.get(capability)
+            run = latest.get(process_type) if process_type else None
+            stages.append({
+                "key": capability,
+                "capability": capability,
+                "component": component,
+                "status": status,
+                "last_run": _run_payload(session, run, include_configuration=False) if run else None,
+            })
+        if group_id:
+            group_uuid = UUID(str(group_id))
+            group_runs = list(session.exec(
+                select(ProcessingRun).where(
+                    ProcessingRun.document_version_id == version_id,
+                    ProcessingRun.execution_environment == "experiment",
+                    ProcessingRun.execution_group_id == group_uuid,
+                ).order_by(ProcessingRun.started_at)
+            ).all())
+            if group_runs:
+                run_payloads = [_run_payload(session, run) for run in group_runs]
+                started = [run.started_at for run in group_runs if run.started_at]
+                completed = [run.completed_at for run in group_runs if run.completed_at]
+                result = {
+                    "execution_group_id": str(group_uuid),
+                    "status": "failed" if any(item["status"] == "failed" for item in run_payloads) else "completed",
+                    "document": selected,
+                    "duration_ms": _duration_ms(min(started), max(completed)) if started and completed else None,
+                    "perception": next((item for item in run_payloads if item["process_type"] == "document_extraction"), None),
+                    "normalization": next((item for item in run_payloads if item["process_type"] == "content_normalization"), None),
+                }
+                normalization_run = next((run for run in group_runs if run.process_type == "content_normalization" and run.status == "completed"), None)
+                production_run = session.exec(
+                    select(ProcessingRun)
+                    .where(
+                        ProcessingRun.document_version_id == version_id,
+                        ProcessingRun.process_type == "content_normalization",
+                        ProcessingRun.execution_environment == "production",
+                        ProcessingRun.status == "completed",
+                    )
+                    .order_by(ProcessingRun.started_at.desc())
+                ).first()
+                if normalization_run and production_run:
+                    comparison = ContentNormalizationComparisonService(session).compare(
+                        production_run.id,
+                        normalization_run.id,
+                    )
+                    result["comparison"] = {
+                        "available": True,
+                        "run_p": comparison["run_p"]["metrics"],
+                        "run_a": comparison["run_a"]["metrics"],
+                        "delta": comparison["delta"],
+                    }
+                else:
+                    result["comparison"] = {
+                        "available": False,
+                        "message": "Aucune référence P comparable disponible.",
+                    }
+                if inspect in {"perception", "normalization"}:
+                    target = result.get(inspect)
+                    if target:
+                        target["inspection"] = _pipeline_inspection(
+                            session,
+                            version_id,
+                            session.get(ProcessingRun, UUID(target["id"])),
+                            inspect,
+                            offset,
+                            limit,
+                        )
+        history = _pipeline_history(session, version_id)
+    else:
+        selected_by_capability = {
+            capability: binding
+            for binding in experimental.bindings
+            for capability in binding.capabilities
+        }
+        stages = []
+        for capability in registry.capabilities:
+            binding = selected_by_capability.get(capability)
+            if binding is None:
+                status = "DISPONIBLE — NON SÉLECTIONNÉE"
+            elif runtime_registry.has(binding.component_key, binding.component_version):
+                status = "EXÉCUTABLE"
+            else:
+                status = "CONNU — NON RACCORDÉ"
+            stages.append({
+                "key": capability,
+                "capability": capability,
+                "component": binding.to_dict() if binding else None,
+                "status": status,
+                "last_run": None,
+            })
+        history = []
+    return {
+        "documents": documents,
+        "selected_document": selected,
+        "pipeline_reference": _pipeline_manifest_payload(production, registry),
+        "pipeline_experiment": _pipeline_manifest_payload(experimental, registry),
+        "pipeline_selection": [binding.to_dict() for binding in experimental.bindings],
+        "components": _pipeline_components_payload(registry, runtime_registry),
+        "capabilities": _pipeline_capabilities_payload(registry, runtime_registry, experimental),
+        "stages": stages,
+        "history": history,
+        "result": result,
+    }
+
+
+def _pipeline_error_payload(message):
+    return {"error": "Le Lab ne peut pas charger les données de pipeline.", "technical_error": str(message)}
+
+
+def _pipeline_request_payload(request):
+    try:
+        import json
+        payload = json.loads(request.body or b"{}")
+    except (TypeError, ValueError):
+        payload = request.POST
+    return payload
+
+
+def _pipeline_selection_from_payload(payload):
+    selection = payload.get("selection", payload.get("bindings"))
+    if isinstance(selection, str):
+        import json
+        try:
+            selection = json.loads(selection)
+        except ValueError as error:
+            raise ValueError("La sélection Pipeline_A n'est pas un JSON valide.") from error
+    return selection
+
+
+def rag_laboratory_pipeline(request):
+    """Read or execute the real manifest-driven experimental pipeline."""
+    if request.method == "GET":
+        payload = request.GET
+    elif request.method == "POST":
+        payload = _pipeline_request_payload(request)
+    else:
+        return JsonResponse({"error": "Méthode non autorisée."}, status=405)
+    try:
+        version_id = UUID(str(payload.get("document_version_id"))) if payload.get("document_version_id") else None
+        group_id = payload.get("execution_group_id")
+        inspect = payload.get("inspect")
+        selection = _pipeline_selection_from_payload(payload)
+        offset = max(_safe_int(payload.get("offset"), 0), 0)
+        limit = min(max(_safe_int(payload.get("limit"), 25), 1), 100)
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Document ou exécution invalide."}, status=400)
+    if request.method == "GET":
+        try:
+            with Session(create_database_engine()) as session:
+                return JsonResponse(_pipeline_lab_state(session, version_id=version_id, group_id=group_id, inspect=inspect, offset=offset, limit=limit, selection=selection))
+        except Exception as error:
+            return JsonResponse(_pipeline_error_payload(error), status=503)
+
+    if payload.get("action") == "configure":
+        try:
+            with Session(create_database_engine()) as session:
+                state = _pipeline_lab_state(
+                    session,
+                    version_id=version_id,
+                    selection=selection,
+                )
+                return JsonResponse(state)
+        except ValueError as error:
+            return JsonResponse({"error": str(error)}, status=422)
+        except Exception as error:
+            return JsonResponse(_pipeline_error_payload(error), status=503)
+
+    if version_id is None:
+        return JsonResponse({"error": "Une DocumentVersion réelle est requise."}, status=400)
+    try:
+        with Session(create_database_engine()) as session:
+            version = session.get(DocumentVersion, version_id)
+            if version is None:
+                return JsonResponse({"error": "DocumentVersion introuvable."}, status=404)
+            if version.page_count is None:
+                return JsonResponse(
+                    {"error": "Cette DocumentVersion est visible mais non exécutable pour le runtime."},
+                    status=422,
+                )
+            registry = build_kaliok_component_registry()
+            manifest = _pipeline_a_manifest(selection, registry)
+            execution_context = ExecutionContext(environment="experiment")
+            runtime_registry = build_kaliok_runtime_registry()
+            runner = ManifestExecutionService(
+                registry,
+                runtime_registry,
+            )
+            try:
+                if selection in (None, ""):
+                    # Keep the established real path for the default A subset.
+                    runner.execute_document_pipeline(
+                        session,
+                        manifest=manifest,
+                        document_version_id=version.id,
+                        execution_context=execution_context,
+                    )
+                    execution_messages = []
+                else:
+                    execution_messages = []
+                    selected = {
+                        capability: next(
+                            (binding for binding in manifest.bindings
+                             if binding.enabled and capability in binding.capabilities),
+                            None,
+                        )
+                        for capability in ("document_extraction", "normalization")
+                    }
+                    wired = {
+                        capability: binding is not None
+                        and runtime_registry.has(binding.component_key, binding.component_version)
+                        for capability, binding in selected.items()
+                    }
+                    for binding in manifest.bindings:
+                        if binding.enabled and not runtime_registry.has(binding.component_key, binding.component_version):
+                            execution_messages.append(
+                                f"{', '.join(binding.capabilities)} sélectionnée(s) avec {binding.component_key}@{binding.component_version} : CONNU — NON RACCORDÉ."
+                            )
+                    if wired["document_extraction"] and wired["normalization"]:
+                        runner.execute_document_pipeline(
+                            session,
+                            manifest=manifest,
+                            document_version_id=version.id,
+                            execution_context=execution_context,
+                        )
+                    else:
+                        perception_result = None
+                        if wired["document_extraction"]:
+                            perception_result = runner.execute_document_extraction(
+                                session,
+                                manifest=manifest,
+                                document_version_id=version.id,
+                                execution_context=execution_context,
+                            )
+                        if wired["normalization"]:
+                            if perception_result is None:
+                                execution_messages.append(
+                                    "normalization ne peut pas démarrer : document_extraction n'est pas exécutable dans cette sélection."
+                                )
+                            else:
+                                runner.execute_normalization(
+                                    session,
+                                    manifest=manifest,
+                                    document_version_id=version.id,
+                                    perception_processing_run_id=perception_result.processing_run_id,
+                                    execution_context=execution_context,
+                                )
+                    if not selected["document_extraction"] and not selected["normalization"]:
+                        execution_messages.append("Aucune étape exécutable sélectionnée dans Pipeline_A.")
+                session.commit()
+                status = 200
+            except Exception as error:
+                session.commit()
+                status = 200
+                state = _pipeline_lab_state(
+                    session,
+                    version_id=version.id,
+                    group_id=execution_context.execution_group_id,
+                )
+                state["execution_error"] = "L’exécution a échoué. Consultez les détails techniques du run."
+                state["technical_error"] = str(error)
+                return JsonResponse(state, status=status)
+            state = _pipeline_lab_state(
+                session,
+                version_id=version.id,
+                group_id=execution_context.execution_group_id,
+                selection=selection,
+            )
+            if execution_messages:
+                state["execution_error"] = " ".join(execution_messages)
+            return JsonResponse(state, status=status)
+    except Exception as error:
+        return JsonResponse(_pipeline_error_payload(error), status=503)
+
+
 def rag_laboratory(request):
     documents, suites, configurations, campaigns, load_errors = _evaluation_lists()
     configurations = _decorate_configurations(configurations)
@@ -211,6 +895,8 @@ def rag_laboratory(request):
     selected_entity_resolution_run_id = request.GET.get("entity_resolution_run")
     entity_resolution_limit = min(max(_safe_int(request.GET.get("entity_resolution_limit"), 25), 1), 100)
     entity_resolution_total = 0
+    pipeline_lab = None
+    pipeline_error = None
 
     if request.method == "POST":
         action = request.POST.get("action")
@@ -566,6 +1252,15 @@ def rag_laboratory(request):
             None,
         )
     campaigns.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    try:
+        selected_pipeline_version = request.GET.get("document_version_id")
+        with Session(create_database_engine()) as session:
+            pipeline_lab = _pipeline_lab_state(
+                session,
+                version_id=UUID(selected_pipeline_version) if selected_pipeline_version else None,
+            )
+    except Exception as error:
+        pipeline_error = str(error)
     return render(request, "core_ui/rag_laboratory.html", {
         "documents": documents,
         "suites": suites,
@@ -603,6 +1298,9 @@ def rag_laboratory(request):
         "entity_resolution_total": entity_resolution_total,
         "entity_resolution_has_more": len(resolved_entities) < entity_resolution_total,
         "entity_resolution_next_limit": min(entity_resolution_limit + 25, 100),
+        "pipeline_lab": pipeline_lab,
+        "pipeline_error": pipeline_error,
+        "pipeline_lab_url": reverse("rag_laboratory_pipeline"),
     })
 
 

@@ -176,6 +176,28 @@ class ComponentRegistry:
     def get(self, component_key: str, version: str) -> ComponentDefinition | None:
         return self._definitions.get((component_key, version))
 
+    @property
+    def definitions(self) -> tuple[ComponentDefinition, ...]:
+        """Return the registered definitions in registry order."""
+        return tuple(self._definitions.values())
+
+    @property
+    def capabilities(self) -> tuple[Capability, ...]:
+        """Return known capabilities without introducing a second taxonomy."""
+        values: list[Capability] = []
+        for definition in self.definitions:
+            for capability in definition.provides:
+                if capability not in values:
+                    values.append(capability)
+        return tuple(values)
+
+    def for_capability(self, capability: Capability) -> tuple[ComponentDefinition, ...]:
+        return tuple(
+            definition
+            for definition in self.definitions
+            if capability in definition.provides
+        )
+
     def require(self, component_key: str, version: str) -> ComponentDefinition:
         definition = self.get(component_key, version)
         if definition is None:

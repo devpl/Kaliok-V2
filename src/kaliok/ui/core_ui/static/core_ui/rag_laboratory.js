@@ -328,4 +328,406 @@ document.addEventListener("DOMContentLoaded", () => {
     const url = new URL(control.href, window.location.href);
     loadEntityResolutionDetail(panel, { entity: url.searchParams.get("entity") || "" });
   }));
+
+  const pipelineRoot = document.querySelector("[data-pipeline-root]");
+  const pipelineSelector = pipelineRoot?.querySelector("[data-pipeline-document]");
+  const pipelineStatus = pipelineRoot?.querySelector("[data-pipeline-status]");
+  const configStatus = pipelineRoot?.querySelector("[data-pipeline-config-status]");
+  const pipelineRunButton = pipelineRoot?.querySelector("[data-pipeline-run]");
+  let pipelineSelection = [];
+
+  function initializePipelineSelection() {
+    const grouped = new Map();
+    pipelineRoot?.querySelectorAll("[data-capability-select]").forEach((select, index) => {
+      if (!select.value) return;
+      const [component_key, component_version] = select.value.split("@@");
+      const identity = `${component_key}@@${component_version}`;
+      let binding = grouped.get(identity);
+      if (!binding) {
+        binding = { binding_key: `binding-${index + 1}`, component_key, component_version, capabilities: [], configuration: {}, dependencies: [], enabled: true };
+        grouped.set(identity, binding);
+      }
+      if (!binding.capabilities.includes(select.dataset.capability)) binding.capabilities.push(select.dataset.capability);
+    });
+    pipelineSelection = [...grouped.values()];
+  }
+
+  function pipelineText(parent, tag, value, className) {
+    const node = textElement(tag, value == null ? "" : value, className);
+    parent.append(node);
+    return node;
+  }
+
+  function csrfToken() {
+    const value = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("csrftoken="))?.split("=").slice(1).join("=") || "";
+    return decodeURIComponent(value);
+  }
+
+  function selectionForPayload() {
+    return pipelineSelection.map((binding) => ({
+      binding_key: binding.binding_key,
+      component_key: binding.component_key,
+      component_version: binding.component_version,
+      capabilities: [...(binding.capabilities || [])],
+      configuration: binding.configuration || {},
+      dependencies: [...(binding.dependencies || [])],
+      enabled: binding.enabled !== false,
+    }));
+  }
+
+  function renderPipelineManifest(container, manifest, title, eyebrow, editable = false) {
+    if (!container || !manifest) return;
+    container.replaceChildren();
+    pipelineText(container, "p", eyebrow, "eyebrow");
+    pipelineText(container, "h3", title);
+    pipelineText(container, "p", manifest.description, "help");
+    pipelineText(container, "p", manifest.revision, "badge");
+    (manifest.bindings || []).forEach((binding) => {
+      const row = document.createElement("div");
+      row.className = "pipeline-binding";
+      pipelineText(row, "strong", `${binding.binding_key}${binding.enabled === false ? " · désactivé" : ""}`);
+      pipelineText(row, "span", `${binding.component_key}@${binding.component_version}`);
+      pipelineText(row, "small", `couvre : ${(binding.capabilities || []).join(", ")}`);
+      const details = document.createElement("details");
+      pipelineText(details, "summary", "Configuration");
+      if (editable) {
+        pipelineText(details, "p", "Éditeur JSON validé côté serveur.", "help");
+        const textarea = document.createElement("textarea");
+        textarea.dataset.pipelineConfig = binding.binding_key;
+        textarea.rows = 5;
+        textarea.value = JSON.stringify(binding.configuration || {}, null, 2);
+        details.append(textarea);
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "secondary";
+        save.dataset.pipelineConfigSave = binding.binding_key;
+        pipelineText(save, "span", "Valider la configuration");
+        details.append(save);
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "secondary";
+        toggle.dataset.pipelineToggle = binding.binding_key;
+        pipelineText(toggle, "span", binding.enabled === false ? "Activer le binding" : "Désactiver le binding");
+        details.append(toggle);
+      } else pipelineText(details, "pre", JSON.stringify(binding.configuration || {}, null, 2));
+      row.append(details);
+      container.append(row);
+    });
+    const details = document.createElement("details");
+    pipelineText(details, "summary", "Détails manifest");
+    appendTechnicalDetails(details, [["pipeline_key", manifest.pipeline_key], ["revision", manifest.revision], ["manifest_hash", manifest.manifest_hash]]);
+    container.append(details);
+  }
+
+  function renderPipelineCapabilities(state) {
+    const container = pipelineRoot?.querySelector("[data-pipeline-capabilities]");
+    if (!container) return;
+    container.replaceChildren();
+    (state.capabilities || []).forEach((capability, index) => {
+      const article = document.createElement("article");
+      article.className = "pipeline-capability";
+      article.dataset.capabilityRow = "";
+      article.dataset.capability = capability.key;
+      const head = document.createElement("div");
+      head.className = "pipeline-capability-head";
+      const name = document.createElement("div");
+      pipelineText(name, "strong", capability.key);
+      pipelineText(name, "span", `Étape ${index + 1}`, "help");
+      pipelineText(head, "span", capability.status, "status-label");
+      head.prepend(name);
+      article.append(head);
+      const label = document.createElement("label");
+      pipelineText(label, "span", "Composant sélectionné");
+      const select = document.createElement("select");
+      select.dataset.capabilitySelect = "";
+      select.dataset.capability = capability.key;
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "Aucun composant sélectionné";
+      select.append(empty);
+      (capability.components || []).forEach((component) => {
+        const option = document.createElement("option");
+        option.value = `${component.component_key}@@${component.version}`;
+        option.textContent = `${component.component_key} @ ${component.version} · ${component.runtime_status}`;
+        if (capability.selected_component && capability.selected_component.component_key === component.component_key && capability.selected_component.component_version === component.version) option.selected = true;
+        select.append(option);
+      });
+      label.append(select);
+      article.append(label);
+      pipelineText(article, "p", capability.selected_binding_key ? `Binding ${capability.selected_binding_key}. Ce binding peut couvrir d’autres capabilities.` : "Capability disponible mais non sélectionnée.", "help");
+      container.append(article);
+    });
+  }
+
+  function renderPipelineStages(container, stages) {
+    if (!container) return;
+    container.replaceChildren();
+    (stages || []).forEach((stage) => {
+      const row = document.createElement("div");
+      row.className = "pipeline-stage";
+      const identity = document.createElement("div");
+      pipelineText(identity, "strong", stage.capability);
+      pipelineText(identity, "span", stage.status, "help");
+      const run = document.createElement("div");
+      const component = stage.component || {};
+      pipelineText(run, "span", component.component_key ? `${component.component_key}@${component.component_version}` : "Aucun composant sélectionné");
+      const last = stage.last_run;
+      pipelineText(run, "small", last ? `Dernier run : ${last.status} · ${last.artifact_count ?? "—"} artefact(s)` : "Aucun run chargé");
+      if (last?.execution_environment === "experiment" && last.execution_group_id) {
+        const inspect = document.createElement("button");
+        inspect.type = "button";
+        inspect.className = "secondary";
+        inspect.dataset.pipelineInspect = stage.key;
+        inspect.dataset.pipelineGroup = last.execution_group_id;
+        pipelineText(inspect, "span", "Inspecter");
+        run.append(inspect);
+      }
+      row.append(identity, run);
+      container.append(row);
+    });
+  }
+
+  function renderPipelineHistory(container, history) {
+    if (!container) return;
+    container.replaceChildren();
+    if (!history?.length) return pipelineText(container, "p", "Aucune exécution expérimentale disponible.", "muted");
+    history.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "history-card pipeline-history-button";
+      button.dataset.pipelineHistory = item.execution_group_id;
+      pipelineText(button, "span", `${item.started_at || "Date inconnue"} · ${item.pipeline_key} / ${item.revision}`);
+      pipelineText(button, "span", item.status, `badge ${item.status}`);
+      container.append(button);
+    });
+  }
+
+  function formatDuration(value) {
+    return value == null || Number(value) <= 0 ? "non mesurée" : `${value} ms`;
+  }
+
+  function renderPipelineInspection(parent, inspection) {
+    const section = document.createElement("div");
+    section.className = "pipeline-inspection";
+    const start = Number(inspection.offset || 0) + 1;
+    const end = Number(inspection.offset || 0) + (inspection.items || []).length;
+    pipelineText(section, "p", `Résultats ${inspection.total ? `${start}–${end} sur ${inspection.total}` : "0"} · Page source : ${Math.floor((inspection.offset || 0) / (inspection.limit || 25)) + 1}`, "help");
+    (inspection.items || []).forEach((item) => {
+      const card = document.createElement("article");
+      card.className = "choice";
+      if (inspection.kind === "perception") {
+        pipelineText(card, "strong", `Page ${item.page} · ${item.type}`);
+        pipelineText(card, "p", item.content);
+        pipelineText(card, "small", `${item.method || "Méthode inconnue"} · ${item.engine || "Moteur inconnu"}${item.confidence == null ? "" : ` · confiance ${item.confidence}`}`, "muted");
+        appendTechnicalDetails(card, [["bbox", item.bbox ? JSON.stringify(item.bbox) : "Non renseignée"], ["ContentBlock UUID", item.id]]);
+      } else {
+        pipelineText(card, "strong", `Unité ${item.order} · ${item.content_type}`);
+        pipelineText(card, "p", item.content);
+        (item.sources || []).forEach((source) => {
+          pipelineText(card, "small", `Source · page ${source.page} · bloc ${source.block_id}`, "muted");
+          pipelineText(card, "blockquote", source.content || "");
+        });
+      }
+      section.append(card);
+    });
+    if (inspection.offset + inspection.items.length < inspection.total) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "secondary";
+      more.dataset.pipelineMore = inspection.kind;
+      more.dataset.pipelineOffset = String(inspection.offset + inspection.items.length);
+      pipelineText(more, "span", "Charger la suite");
+      section.append(more);
+    }
+    parent.append(section);
+  }
+
+  function renderPipelineRun(parent, run, label) {
+    const section = document.createElement("section");
+    section.className = "pipeline-run-detail";
+    pipelineText(section, "h4", label);
+    const metrics = document.createElement("div");
+    metrics.className = "metrics";
+    [["Statut", run?.status || "non lancé"], ["Durée", formatDuration(run?.duration_ms)], ["Moteur", run ? `${run.engine || "—"}@${run.engine_version || "—"}` : "—"], ["Artefacts", run?.artifact_count ?? "—"]].forEach(([name, value]) => {
+      const metric = document.createElement("div");
+      metric.className = "metric";
+      pipelineText(metric, "span", name);
+      pipelineText(metric, "strong", value);
+      metrics.append(metric);
+    });
+    section.append(metrics);
+    if (run?.error) pipelineText(section, "p", "Cette étape a échoué. Les résultats disponibles restent inspectables.", "alert error");
+    if (run) {
+      const inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "secondary";
+      inspect.dataset.pipelineInspect = label.toLowerCase().startsWith("perception") ? "perception" : "normalization";
+      pipelineText(inspect, "span", label.toLowerCase().startsWith("perception") ? "Inspecter les ContentBlocks" : "Inspecter les NormalizedContentUnits");
+      section.append(inspect);
+      if (run.inspection) renderPipelineInspection(section, run.inspection);
+      appendTechnicalDetails(section, [["ProcessingRun UUID", run.id], ["execution_environment", run.execution_environment], ["execution_group_id", run.execution_group_id], ["configuration", JSON.stringify(run.configuration || {})], ["metrics", JSON.stringify(run.metrics || {})]]);
+    }
+    parent.append(section);
+  }
+
+  function renderPipelineResult(root, state) {
+    const container = root.querySelector("[data-pipeline-result]");
+    if (!container) return;
+    const result = state.result;
+    container.replaceChildren();
+    pipelineText(container, "p", "Résultats Pipeline_A courant", "eyebrow");
+    if (!result) {
+      pipelineText(container, "h3", "Prêt à inspecter");
+      pipelineText(container, "p", "Lancez les étapes exécutables pour voir les ProcessingRuns, ContentBlocks et NormalizedContentUnits.", "muted");
+      return;
+    }
+    pipelineText(container, "h3", `Pipeline_A · ${result.status}`);
+    pipelineText(container, "p", `${result.document?.filename || "Document"} · durée totale ${formatDuration(result.duration_ms)}`);
+    const runs = document.createElement("div");
+    runs.className = "pipeline-runs";
+    renderPipelineRun(runs, result.perception, "Perception");
+    renderPipelineRun(runs, result.normalization, "Normalisation");
+    container.append(runs);
+    appendTechnicalDetails(container, [["execution_group_id", result.execution_group_id]]);
+    if (state.execution_error) pipelineText(container, "p", state.execution_error, "alert error");
+    if (state.technical_error) appendTechnicalDetails(container, [["Erreur technique", state.technical_error]]);
+  }
+
+  function renderPipelineState(state) {
+    if (!pipelineRoot || !state) return;
+    pipelineSelection = state.pipeline_selection || [];
+    pipelineRoot.dataset.version = state.selected_document?.document_version_id || "";
+    pipelineRoot.dataset.group = state.result?.execution_group_id || "";
+    if (pipelineSelector) {
+      const current = state.selected_document?.document_version_id || "";
+      const options = document.createDocumentFragment();
+      (state.documents || []).forEach((documentItem) => {
+        const option = document.createElement("option");
+        option.value = documentItem.document_version_id;
+        option.dataset.executable = String(Boolean(documentItem.executable));
+        option.selected = documentItem.document_version_id === current;
+        option.textContent = `${documentItem.filename} · v${documentItem.version_number} · ${documentItem.processing_status}${documentItem.page_count ? ` · ${documentItem.page_count} page(s)` : ""}`;
+        options.append(option);
+      });
+      pipelineSelector.replaceChildren(options);
+      pipelineSelector.disabled = !(state.documents || []).length;
+    }
+    const documentMeta = pipelineRoot.querySelector("[data-pipeline-document-meta]");
+    if (documentMeta && state.selected_document) documentMeta.textContent = `${state.selected_document.title || state.selected_document.filename} · hash ${state.selected_document.file_hash_short || "—"}`;
+    const documentWarning = pipelineRoot.querySelector("[data-pipeline-document-warning]");
+    if (documentWarning) {
+      documentWarning.hidden = Boolean(state.selected_document?.executable);
+      documentWarning.textContent = state.selected_document ? "Cette version reste visible mais ne peut pas être lancée : le runtime n’a pas de nombre de pages persistant." : "Aucun document exploitable disponible.";
+    }
+    renderPipelineCapabilities(state);
+    renderPipelineManifest(pipelineRoot.querySelector("[data-pipeline-reference]"), state.pipeline_reference, "Pipeline_P", "Pipeline de référence");
+    renderPipelineManifest(pipelineRoot.querySelector("[data-pipeline-experiment]"), state.pipeline_experiment, "Pipeline_A", "Manifest courant · construit par le serveur", true);
+    renderPipelineStages(pipelineRoot.querySelector("[data-pipeline-stages]"), state.stages);
+    renderPipelineHistory(pipelineRoot.querySelector("[data-pipeline-history]"), state.history);
+    renderPipelineResult(pipelineRoot, state);
+    if (pipelineRunButton) pipelineRunButton.disabled = !state.selected_document?.executable;
+  }
+
+  async function loadPipelineState(extra = {}) {
+    if (!pipelineRoot) return null;
+    pipelineRoot.setAttribute("aria-busy", "true");
+    if (pipelineStatus) pipelineStatus.textContent = "Chargement ciblé…";
+    try {
+      const params = new URLSearchParams(extra);
+      if (!params.has("document_version_id")) params.set("document_version_id", pipelineRoot.dataset.version || pipelineSelector?.value || "");
+      params.set("selection", JSON.stringify(selectionForPayload()));
+      const state = await fetchJson(`${pipelineRoot.dataset.pipelineUrl}?${params}`);
+      renderPipelineState(state);
+      if (pipelineStatus) pipelineStatus.textContent = !state.selected_document ? "Aucun document exploitable disponible." : state.selected_document.executable ? "" : "Cette DocumentVersion est visible mais non exécutable pour le runtime.";
+      return state;
+    } catch (error) {
+      if (pipelineStatus) pipelineStatus.textContent = `Erreur : ${error.message}`;
+      return null;
+    } finally { pipelineRoot.setAttribute("aria-busy", "false"); }
+  }
+
+  async function configurePipeline() {
+    if (!pipelineRoot) return;
+    if (configStatus) configStatus.textContent = "Validation du manifest…";
+    try {
+      const response = await fetch(pipelineRoot.dataset.pipelineUrl, {
+        method: "POST", credentials: "same-origin",
+        headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
+        body: JSON.stringify({ action: "configure", document_version_id: pipelineSelector?.value || "", selection: selectionForPayload() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.error) throw new Error(payload.error || "Le manifest Pipeline_A est invalide.");
+      renderPipelineState(payload);
+      if (configStatus) configStatus.textContent = "Pipeline_A validé et reconstruit côté serveur.";
+    } catch (error) { if (configStatus) configStatus.textContent = `Configuration refusée : ${error.message}`; }
+  }
+
+  function changeCapability(capability, value) {
+    const kept = [];
+    pipelineSelection.forEach((binding) => {
+      binding.capabilities = (binding.capabilities || []).filter((item) => item !== capability);
+      if (binding.capabilities.length) kept.push(binding);
+    });
+    if (value) {
+      const [component_key, component_version] = value.split("@@");
+      let target = pipelineSelection.find((binding) => binding.component_key === component_key && binding.component_version === component_version);
+      if (!target) {
+        target = { binding_key: `binding-${kept.length + 1}`, component_key, component_version, capabilities: [], configuration: {}, dependencies: [], enabled: true };
+        kept.push(target);
+      }
+      target.capabilities.push(capability);
+    }
+    pipelineSelection = kept;
+    configurePipeline();
+  }
+
+  async function executePipeline() {
+    if (!pipelineRoot || !pipelineSelector?.value || !pipelineRunButton || pipelineRunButton.disabled) return;
+    pipelineRunButton.disabled = true;
+    if (pipelineStatus) pipelineStatus.textContent = "Exécution… les bindings non raccordés seront signalés.";
+    try {
+      const response = await fetch(pipelineRoot.dataset.pipelineUrl, { method: "POST", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRFToken": csrfToken() }, body: JSON.stringify({ document_version_id: pipelineSelector.value, selection: selectionForPayload() }) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.error) throw new Error(payload.error || "L’exécution du pipeline a échoué.");
+      renderPipelineState(payload);
+      if (pipelineStatus) pipelineStatus.textContent = payload.execution_error || "Exécution terminée. Les résultats sont persistés comme expérience.";
+    } catch (error) { if (pipelineStatus) pipelineStatus.textContent = `Erreur : ${error.message}`; }
+    finally { pipelineRunButton.disabled = !pipelineSelector?.selectedOptions[0]?.dataset.executable || false; }
+  }
+
+  pipelineSelector?.addEventListener("change", () => loadPipelineState({ document_version_id: pipelineSelector.value }));
+  pipelineRunButton?.addEventListener("click", executePipeline);
+  pipelineRoot?.addEventListener("change", (event) => {
+    const select = event.target.closest("[data-capability-select]");
+    if (select) changeCapability(select.dataset.capability, select.value);
+  });
+  pipelineRoot?.addEventListener("click", async (event) => {
+    const historyButton = event.target.closest("[data-pipeline-history]");
+    const inspectButton = event.target.closest("[data-pipeline-inspect]");
+    const moreButton = event.target.closest("[data-pipeline-more]");
+    const configSave = event.target.closest("[data-pipeline-config-save]");
+    const toggleButton = event.target.closest("[data-pipeline-toggle]");
+    if (configSave) {
+      const binding = pipelineSelection.find((item) => item.binding_key === configSave.dataset.pipelineConfigSave);
+      const textarea = pipelineRoot.querySelector(`[data-pipeline-config="${CSS.escape(configSave.dataset.pipelineConfigSave)}"]`);
+      if (!binding || !textarea) return;
+      try {
+        const parsed = JSON.parse(textarea.value || "{}");
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("un objet JSON est attendu");
+        binding.configuration = parsed;
+        await configurePipeline();
+      } catch (error) { if (configStatus) configStatus.textContent = `Configuration refusée : ${error.message}`; }
+      return;
+    }
+    if (toggleButton) {
+      const binding = pipelineSelection.find((item) => item.binding_key === toggleButton.dataset.pipelineToggle);
+      if (binding) { binding.enabled = binding.enabled === false; await configurePipeline(); }
+      return;
+    }
+    const group = inspectButton?.dataset.pipelineGroup || pipelineRoot.dataset.group || "";
+    if (historyButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: historyButton.dataset.pipelineHistory });
+    else if (inspectButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: inspectButton.dataset.pipelineInspect, offset: "0", limit: "25" });
+    else if (moreButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: moreButton.dataset.pipelineMore, offset: moreButton.dataset.pipelineOffset, limit: "25" });
+  });
+  initializePipelineSelection();
 });
