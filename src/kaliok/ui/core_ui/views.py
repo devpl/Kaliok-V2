@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from kaliok.discovery import CandidateDiscoveryReadService
+from kaliok.entity_resolution import EntityResolutionReadService
 from kaliok.execution import ExecutionContext
 from kaliok.normalization.comparison import ContentNormalizationComparisonService
 from kaliok.pipeline import (
@@ -28,6 +29,7 @@ from kaliok.storage.models import (
     DiscoveredCandidate,
     Document,
     DocumentVersion,
+    Entity,
     NormalizedContentUnit,
     NormalizedContentUnitSource,
     Page,
@@ -298,6 +300,18 @@ def _iso(value):
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def _json_safe(value):
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _duration_ms(started_at, completed_at):
     if not started_at or not completed_at:
         return None
@@ -454,6 +468,10 @@ def _count_run_artifacts(session, run):
                 DiscoveredCandidate.processing_run_id == run.id
             )
         ).one())
+    if run.process_type == "entity_resolution":
+        return len(session.exec(
+            select(Entity.id).where(Entity.processing_run_id == run.id)
+        ).all())
     return None
 
 
@@ -510,11 +528,12 @@ def _pipeline_history(session, version_id, limit=20):
             "perception": next((item for item in payloads if item["process_type"] == "document_extraction"), None),
             "normalization": next((item for item in payloads if item["process_type"] == "content_normalization"), None),
             "discovery": next((item for item in payloads if item["process_type"] == "candidate_discovery"), None),
+            "resolution": next((item for item in payloads if item["process_type"] == "entity_resolution"), None),
         })
     return history
 
 
-def _pipeline_inspection(session, version_id, run, kind, offset, limit):
+def _pipeline_inspection(session, version_id, run, kind, offset, limit, entity_id=None):
     if kind == "perception":
         rows = session.exec(
             select(ContentBlock, Page)
@@ -624,10 +643,34 @@ def _pipeline_inspection(session, version_id, run, kind, offset, limit):
             "offset": payload["offset"],
             "limit": payload["limit"],
         }
+    if kind == "entity_resolution":
+        reader = EntityResolutionReadService(session)
+        payload = reader.list_entities(run.id, limit=limit, offset=offset)
+        if payload is None:
+            return None
+        items = [_json_safe(item) for item in payload["items"]]
+        if entity_id:
+            try:
+                detail = reader.get_entity(UUID(str(entity_id)))
+            except (TypeError, ValueError):
+                detail = None
+            if detail and str(detail.get("run", {}).get("id")) == str(run.id):
+                for item in items:
+                    if item["id"] == str(entity_id):
+                        item["detail"] = _json_safe(detail)
+                        break
+        return {
+            "kind": kind,
+            "status": run.status,
+            "items": items,
+            "total": payload["total"],
+            "offset": payload["offset"],
+            "limit": payload["limit"],
+        }
     return None
 
 
-def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None, offset=0, limit=25, selection=None):
+def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None, entity_id=None, offset=0, limit=25, selection=None):
     rows = session.exec(
         select(DocumentVersion, Document)
         .join(Document, Document.id == DocumentVersion.document_id)
@@ -659,6 +702,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
             "document_extraction": "document_extraction",
             "normalization": "content_normalization",
             "entity_discovery": "candidate_discovery",
+            "entity_resolution": "entity_resolution",
         }
         selected_by_capability = {
             capability: binding
@@ -715,6 +759,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                     "perception": next((item for item in run_payloads if item["process_type"] == "document_extraction"), None),
                     "normalization": next((item for item in run_payloads if item["process_type"] == "content_normalization"), None),
                     "discovery": next((item for item in run_payloads if item["process_type"] == "candidate_discovery"), None),
+                    "resolution": next((item for item in run_payloads if item["process_type"] == "entity_resolution"), None),
                 }
                 normalization_run = next((run for run in group_runs if run.process_type == "content_normalization" and run.status == "completed"), None)
                 production_run = session.exec(
@@ -743,8 +788,8 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                         "available": False,
                         "message": "Aucune référence P comparable disponible.",
                     }
-                if inspect in {"perception", "normalization", "discovery"}:
-                    target = result.get(inspect)
+                if inspect in {"perception", "normalization", "discovery", "entity_resolution"}:
+                    target = result.get({"entity_resolution": "resolution"}.get(inspect, inspect))
                     if target:
                         target["inspection"] = _pipeline_inspection(
                             session,
@@ -753,6 +798,7 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                             inspect,
                             offset,
                             limit,
+                            entity_id,
                         )
         history = _pipeline_history(session, version_id)
     else:
@@ -833,6 +879,7 @@ def rag_laboratory_pipeline(request):
         version_id = UUID(str(payload.get("document_version_id"))) if payload.get("document_version_id") else None
         group_id = payload.get("execution_group_id")
         inspect = payload.get("inspect")
+        entity_id = payload.get("entity")
         selection = _pipeline_selection_from_payload(payload)
         offset = max(_safe_int(payload.get("offset"), 0), 0)
         limit = min(max(_safe_int(payload.get("limit"), 25), 1), 100)
@@ -841,7 +888,7 @@ def rag_laboratory_pipeline(request):
     if request.method == "GET":
         try:
             with Session(create_database_engine()) as session:
-                return JsonResponse(_pipeline_lab_state(session, version_id=version_id, group_id=group_id, inspect=inspect, offset=offset, limit=limit, selection=selection))
+                return JsonResponse(_pipeline_lab_state(session, version_id=version_id, group_id=group_id, inspect=inspect, entity_id=entity_id, offset=offset, limit=limit, selection=selection))
         except Exception as error:
             return JsonResponse(_pipeline_error_payload(error), status=503)
 
@@ -897,7 +944,7 @@ def rag_laboratory_pipeline(request):
                              if binding.enabled and capability in binding.capabilities),
                             None,
                         )
-                        for capability in ("document_extraction", "normalization", "entity_discovery")
+                         for capability in ("document_extraction", "normalization", "entity_discovery", "entity_resolution")
                     }
                     wired = {
                         capability: binding is not None
@@ -909,11 +956,16 @@ def rag_laboratory_pipeline(request):
                             execution_messages.append(
                                 f"{', '.join(binding.capabilities)} sélectionnée(s) avec {binding.component_key}@{binding.component_version} : CONNU — NON RACCORDÉ."
                             )
-                    if (
+                    chain_ready = (
                         wired["document_extraction"]
                         and wired["normalization"]
                         and (selected["entity_discovery"] is None or wired["entity_discovery"])
-                    ):
+                        and (
+                            selected["entity_resolution"] is None
+                            or (selected["entity_discovery"] is not None and wired["entity_discovery"])
+                        )
+                    )
+                    if chain_ready:
                         runner.execute_document_pipeline(
                             session,
                             manifest=manifest,
@@ -922,6 +974,8 @@ def rag_laboratory_pipeline(request):
                         )
                     else:
                         perception_result = None
+                        normalization_result = None
+                        discovery_result = None
                         if wired["document_extraction"]:
                             perception_result = runner.execute_document_extraction(
                                 session,
@@ -935,7 +989,7 @@ def rag_laboratory_pipeline(request):
                                     "normalization ne peut pas démarrer : document_extraction n'est pas exécutable dans cette sélection."
                                 )
                             else:
-                                runner.execute_normalization(
+                                normalization_result = runner.execute_normalization(
                                     session,
                                     manifest=manifest,
                                     document_version_id=version.id,
@@ -948,23 +1002,27 @@ def rag_laboratory_pipeline(request):
                                     "entity_discovery ne peut pas démarrer : document_extraction et normalization doivent être exécutables."
                                 )
                             else:
-                                normalization_run = session.exec(
-                                    select(ProcessingRun)
-                                    .where(
-                                        ProcessingRun.document_version_id == version.id,
-                                        ProcessingRun.process_type == "content_normalization",
-                                        ProcessingRun.execution_group_id == execution_context.execution_group_id,
-                                    )
-                                    .order_by(ProcessingRun.started_at.desc())
-                                ).first()
-                                if normalization_run is not None:
-                                    runner.execute_entity_discovery(
+                                if normalization_result is not None:
+                                    discovery_result = runner.execute_entity_discovery(
                                         session,
                                         manifest=manifest,
                                         document_version_id=version.id,
-                                        normalization_processing_run_id=normalization_run.id,
+                                        normalization_processing_run_id=normalization_result.processing_run_id,
                                         execution_context=execution_context,
                                     )
+                        if wired["entity_resolution"]:
+                            if discovery_result is None:
+                                execution_messages.append(
+                                    "entity_resolution ne peut pas démarrer : entity_discovery doit produire un run courant dans cette sélection."
+                                )
+                            else:
+                                runner.execute_entity_resolution(
+                                    session,
+                                    manifest=manifest,
+                                    document_version_id=version.id,
+                                    discovery_processing_run_id=discovery_result.processing_run_id,
+                                    execution_context=execution_context,
+                                )
                     if not any(selected.values()):
                         execution_messages.append("Aucune étape exécutable sélectionnée dans Pipeline_A.")
                 session.commit()

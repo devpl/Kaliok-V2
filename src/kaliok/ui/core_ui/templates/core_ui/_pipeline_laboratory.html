@@ -26,7 +26,7 @@
       {% else %}<p class="alert">Aucun document exploitable disponible.</p>{% endif %}
       <div class="pipeline-action">
         <div><strong>Lancer les étapes exécutables</strong><p class="help">Le runtime lance uniquement les bindings raccordés et signale les autres. Les runs restent dans l’environnement expérimental.</p></div>
-        <button type="button" data-pipeline-run {% if not pipeline_lab.selected_document or not pipeline_lab.selected_document.executable %}disabled{% endif %}>Lancer perception + normalisation</button>
+        <button type="button" data-pipeline-run {% if not pipeline_lab.selected_document or not pipeline_lab.selected_document.executable %}disabled{% endif %}>Lancer Pipeline_A</button>
       </div>
       <p class="pipeline-status" data-pipeline-status role="status" aria-live="polite"></p>
     </div>

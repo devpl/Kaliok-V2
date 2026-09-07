@@ -178,6 +178,7 @@ def test_real_registry_exposes_components_by_capability_and_runtime_state():
     assert {item["component_key"] for item in by_key["normalization"]["components"]} == {"kaliok-normalizer"}
     assert by_key["normalization"]["status"] == "EXÉCUTABLE"
     assert by_key["entity_discovery"]["components"][0]["runtime_status"] == "EXECUTABLE"
+    assert by_key["entity_resolution"]["components"][0]["runtime_status"] == "EXECUTABLE"
 
 
 def test_pipeline_a_groups_one_web_component_across_capabilities_and_validates_scope():
@@ -259,7 +260,7 @@ def test_laboratory_renders_pipeline_section_without_a_full_reload(monkeypatch):
     assert response.status_code == 200
     content = response.content.decode()
     assert "Pipeline en gestation" in content
-    assert "Lancer perception + normalisation" in content
+    assert "Lancer Pipeline_A" in content
     assert "pipeline-laboratory" in content
 
 
@@ -277,6 +278,7 @@ def test_pipeline_js_does_not_shadow_dom_document():
     assert "forEach((document)" not in js
     assert "forEach((documentItem)" in js
     assert "document.createElement(\"option\")" in js
+    assert "Inspecter les entités" in js
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

@@ -625,6 +625,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const start = Number(inspection.offset || 0) + 1;
     const end = Number(inspection.offset || 0) + (inspection.items || []).length;
     pipelineText(section, "p", `Résultats ${inspection.total ? `${start}–${end} sur ${inspection.total}` : "0"} · Page source : ${Math.floor((inspection.offset || 0) / (inspection.limit || 25)) + 1}`, "help");
+    if (inspection.status === "failed") {
+      pipelineText(section, "p", "Cette étape a échoué ; aucun résultat ne doit être interprété comme un succès.", "alert error");
+    }
     (inspection.items || []).forEach((item) => {
       const card = document.createElement("article");
       card.className = "choice";
@@ -644,6 +647,41 @@ document.addEventListener("DOMContentLoaded", () => {
           ["Offsets", `${item.start_offset}–${item.end_offset}`],
           ["Source", item.unit_content],
         ]);
+      } else if (inspection.kind === "entity_resolution") {
+        const entity = item.detail?.entity || item;
+        pipelineText(card, "strong", entity.canonical_label || "Entité proposée");
+        pipelineText(card, "small", `${entity.entity_type || "Type inconnu"} · ${item.membership_count || 0} occurrence(s) · ${item.document_count || 0} document(s) · ${item.page_count || 0} page(s)`, "muted");
+        if (item.confidence != null) pipelineText(card, "p", `Confiance : ${Number(item.confidence).toFixed(2)}`);
+        if (item.detail) {
+          pipelineText(card, "p", item.membership_count > 1 ? "Groupe formé par valeur normalisée exacte." : "Singleton conservé sans rapprochement.", "resolution-reason");
+          (item.detail.memberships || []).forEach((membership) => {
+            const membershipCard = document.createElement("div");
+            membershipCard.className = "choice";
+            pipelineText(membershipCard, "strong", `${membership.candidate?.raw_value || "Occurrence"} · ${membership.document?.filename || "Document inconnu"}`);
+            (membership.provenance || []).forEach((source) => {
+              pipelineText(membershipCard, "p", source.exact_text || "Occurrence sans extrait source");
+              const unit = source.normalized_content_unit;
+              if (unit) {
+                pipelineText(membershipCard, "small", `NormalizedContentUnit ${unit.id} · unité ${unit.unit_index}`, "muted");
+                (unit.sources || []).forEach((origin) => {
+                  const block = origin.content_block;
+                  if (!block) return;
+                  pipelineText(membershipCard, "small", `ContentBlock ${block.id} · ${block.fragments?.map((fragment) => `page ${fragment.page_number}`).join(", ") || "page inconnue"}`, "muted");
+                });
+              }
+            });
+            appendTechnicalDetails(membershipCard, [["Membership UUID", membership.membership_id], ["Candidate UUID", membership.candidate?.candidate_id], ["Stratégie", membership.evidences?.map((evidence) => evidence.method).join(", ") || membership.decision_origin]]);
+            card.append(membershipCard);
+          });
+        } else {
+          const entityButton = document.createElement("button");
+          entityButton.type = "button";
+          entityButton.className = "secondary";
+          entityButton.dataset.pipelineEntity = item.id;
+          pipelineText(entityButton, "span", "Consulter la provenance");
+          card.append(entityButton);
+        }
+        appendTechnicalDetails(card, [["Entity UUID", item.id], ["Statut", item.status], ["Occurrences", item.membership_count], ["Groupes / singletons", item.membership_count > 1 ? "Groupe" : "Singleton"]]);
       } else {
         pipelineText(card, "strong", `Unité ${item.order} · ${item.content_type}`);
         pipelineText(card, "p", item.content);
@@ -686,10 +724,14 @@ document.addEventListener("DOMContentLoaded", () => {
       inspect.type = "button";
       inspect.className = "secondary";
       const lowerLabel = label.toLowerCase();
-      const inspectKind = lowerLabel.startsWith("perception") ? "perception" : lowerLabel.startsWith("discovery") ? "discovery" : "normalization";
+       const inspectKind = lowerLabel.startsWith("perception") ? "perception" : lowerLabel.startsWith("discovery") ? "discovery" : lowerLabel.startsWith("entity resolution") ? "entity_resolution" : "normalization";
       inspect.dataset.pipelineInspect = inspectKind;
-      pipelineText(inspect, "span", inspectKind === "perception" ? "Inspecter les ContentBlocks" : inspectKind === "discovery" ? "Inspecter les candidats" : "Inspecter les NormalizedContentUnits");
-      section.append(inspect);
+       pipelineText(inspect, "span", inspectKind === "perception" ? "Inspecter les ContentBlocks" : inspectKind === "discovery" ? "Inspecter les candidats" : inspectKind === "entity_resolution" ? "Inspecter les entités" : "Inspecter les NormalizedContentUnits");
+       section.append(inspect);
+       if (inspectKind === "entity_resolution" && run.status === "completed") {
+         const metrics = run.metrics || {};
+         pipelineText(section, "p", `${metrics.entity_count ?? 0} entité(s) proposée(s) · ${metrics.grouped_entity_count ?? 0} groupe(s) · ${metrics.singleton_entity_count ?? 0} singleton(s)`, "help");
+       }
       if (run.inspection) renderPipelineInspection(section, run.inspection);
       appendTechnicalDetails(section, [["ProcessingRun UUID", run.id], ["execution_environment", run.execution_environment], ["execution_group_id", run.execution_group_id], ["configuration", JSON.stringify(run.configuration || {})], ["metrics", JSON.stringify(run.metrics || {})]]);
     }
@@ -714,6 +756,7 @@ document.addEventListener("DOMContentLoaded", () => {
     renderPipelineRun(runs, result.perception, "Perception");
     renderPipelineRun(runs, result.normalization, "Normalisation");
     if (result.discovery) renderPipelineRun(runs, result.discovery, "Discovery");
+    if (result.resolution) renderPipelineRun(runs, result.resolution, "Entity Resolution");
     container.append(runs);
     appendTechnicalDetails(container, [["execution_group_id", result.execution_group_id]]);
     if (state.execution_error) pipelineText(container, "p", state.execution_error, "alert error");
@@ -832,6 +875,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!pipelineRoot || (!pipelineRoot.contains(event.target) && !event.target.closest("[data-pipeline-result], [data-pipeline-history]"))) return;
     const historyButton = event.target.closest("[data-pipeline-history]");
     const inspectButton = event.target.closest("[data-pipeline-inspect]");
+    const entityButton = event.target.closest("[data-pipeline-entity]");
     const moreButton = event.target.closest("[data-pipeline-more]");
     const configSave = event.target.closest("[data-pipeline-config-save]");
     const toggleButton = event.target.closest("[data-pipeline-toggle]");
@@ -855,6 +899,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const group = inspectButton?.dataset.pipelineGroup || pipelineRoot.dataset.group || "";
     if (historyButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: historyButton.dataset.pipelineHistory });
     else if (inspectButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: inspectButton.dataset.pipelineInspect, offset: "0", limit: "25" });
+    else if (entityButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: "entity_resolution", entity: entityButton.dataset.pipelineEntity, offset: "0", limit: "25" });
     else if (moreButton) await loadPipelineState({ document_version_id: pipelineRoot.dataset.version, execution_group_id: group, inspect: moreButton.dataset.pipelineMore, offset: moreButton.dataset.pipelineOffset, limit: "25" });
   });
   initializePipelineSelection();

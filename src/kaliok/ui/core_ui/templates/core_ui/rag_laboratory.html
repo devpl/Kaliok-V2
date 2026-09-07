@@ -66,4 +66,4 @@
   {% if profile.retired_revisions %}<details class="retired-group"><summary>Anciennes versions ({{ profile.retired_revisions|length }})</summary><div>{% for revision in profile.retired_revisions %}{% include "core_ui/_configuration_version.html" with revision=revision action_label="Consulter" %}{% endfor %}</div></details>{% endif %}
 </article>{% empty %}<article class="card">Aucun profil disponible.</article>{% endfor %}</section>
 </section>
-{% endblock %}{% block scripts %}<script src="{% static 'core_ui/rag_laboratory.js' %}?v=lab-composition-4"></script>{% endblock %}
+{% endblock %}{% block scripts %}<script src="{% static 'core_ui/rag_laboratory.js' %}?v=entity-resolution-1"></script>{% endblock %}

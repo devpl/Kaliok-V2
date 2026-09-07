@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from kaliok.documents.reader import read_document
 from kaliok.discovery import (
@@ -14,6 +14,7 @@ from kaliok.discovery import (
     LexicalCandidateDetector,
     LexicalTerm,
 )
+from kaliok.entity_resolution import EntityResolutionResult, EntityResolutionService
 from kaliok.execution import ExecutionContext
 from kaliok.hashing import canonical_json_hash
 from kaliok.indexing.service import (
@@ -25,7 +26,7 @@ from kaliok.normalization import ContentNormalizationResult, ContentNormalizatio
 from kaliok.normalization.service import ENGINE_VERSION
 from kaliok.pipeline.components import ComponentBinding, ComponentRegistry
 from kaliok.pipeline.manifest import PipelineManifest
-from kaliok.storage.models import DocumentVersion, ProcessingRun
+from kaliok.storage.models import DiscoveredCandidate, DocumentVersion, ProcessingRun
 
 
 class NormalizationRuntimeAdapter(Protocol):
@@ -246,9 +247,72 @@ class KaliokDiscoveryAdapter:
         return tuple(detectors)
 
 
+class KaliokEntityResolutionAdapter:
+    """Adapter for the real EntityResolutionService.
+
+    Entity resolution has no configurable strategy beyond the service's
+    declared exact-normalized strategy. The candidate scope is always read
+    from the explicit Discovery ProcessingRun passed by the pipeline.
+    """
+
+    def execute(
+        self,
+        session: Session,
+        *,
+        binding: ComponentBinding,
+        document_version_id: UUID,
+        discovery_processing_run_id: UUID,
+        execution_context: ExecutionContext,
+        pipeline_metadata: Mapping[str, object],
+    ) -> EntityResolutionResult:
+        if binding.configuration:
+            raise ValueError(
+                "Configuration non supportée par Entity Resolution : "
+                f"{', '.join(sorted(binding.configuration))}."
+            )
+        discovery_run = session.get(ProcessingRun, discovery_processing_run_id)
+        if discovery_run is None:
+            raise ValueError(
+                "Le run Discovery courant est introuvable : "
+                f"{discovery_processing_run_id}."
+            )
+        if discovery_run.process_type != "candidate_discovery":
+            raise ValueError("Le run fourni n'est pas un run candidate_discovery.")
+        if discovery_run.document_version_id != document_version_id:
+            raise ValueError("Le run Discovery appartient à un autre document.")
+        if discovery_run.status != "completed":
+            raise ValueError("Le run Discovery courant doit être completed.")
+        if discovery_run.execution_environment != execution_context.environment:
+            raise ValueError("Le run Discovery n'est pas dans le même environnement d'exécution.")
+        if discovery_run.execution_group_id != execution_context.execution_group_id:
+            raise ValueError("Le run Discovery n'appartient pas au même execution_group_id.")
+
+        candidate_ids = list(session.exec(
+            select(DiscoveredCandidate.id)
+            .where(DiscoveredCandidate.processing_run_id == discovery_processing_run_id)
+            .order_by(DiscoveredCandidate.created_at, DiscoveredCandidate.id)
+        ).all())
+        if not candidate_ids:
+            raise ValueError("Le run Discovery courant ne contient aucun candidat.")
+        result = EntityResolutionService(session).resolve(
+            candidate_ids,
+            execution_context=execution_context,
+        )
+        run = session.get(ProcessingRun, result.processing_run_id)
+        if run is not None:
+            configuration = dict(run.configuration or {})
+            configuration["discovery_processing_run_id"] = str(discovery_processing_run_id)
+            configuration["pipeline"] = dict(pipeline_metadata)
+            run.configuration = configuration
+            run.configuration_hash = canonical_json_hash(configuration)
+            session.add(run)
+            session.flush()
+        return result
+
+
 @dataclass(frozen=True)
 class ManifestExecutionResult:
-    result: ContentNormalizationResult | CandidateDiscoveryResult | ProcessingRun
+    result: ContentNormalizationResult | CandidateDiscoveryResult | EntityResolutionResult | ProcessingRun
     binding_key: str
     component_key: str
     component_version: str
@@ -327,6 +391,43 @@ class ManifestExecutionService:
             capability=capability,
             manifest_hash=manifest.manifest_hash,
             document_version_id=result.document_version_id,
+            artifact_metadata={"processing_run_id": result.processing_run_id},
+        )
+
+    def execute_entity_resolution(
+        self,
+        session: Session,
+        *,
+        manifest: PipelineManifest,
+        document_version_id: UUID,
+        discovery_processing_run_id: UUID,
+        execution_context: ExecutionContext,
+    ) -> ManifestExecutionResult:
+        capability = "entity_resolution"
+        manifest.validate(self._component_registry)
+        binding = self._select_binding(manifest, capability)
+        adapter = self._runtime_registry.resolve(
+            binding.component_key,
+            binding.component_version,
+        )
+        if not hasattr(adapter, "execute"):
+            raise ValueError("Runtime adapter absent ou invalide pour le binding.")
+        result = adapter.execute(
+            session,
+            binding=binding,
+            document_version_id=document_version_id,
+            discovery_processing_run_id=discovery_processing_run_id,
+            execution_context=execution_context,
+            pipeline_metadata=self._pipeline_metadata(manifest, binding, capability),
+        )
+        return ManifestExecutionResult(
+            result=result,
+            binding_key=binding.binding_key,
+            component_key=binding.component_key,
+            component_version=binding.component_version,
+            capability=capability,
+            manifest_hash=manifest.manifest_hash,
+            document_version_id=document_version_id,
             artifact_metadata={"processing_run_id": result.processing_run_id},
         )
 
@@ -447,10 +548,28 @@ class ManifestExecutionService:
                 normalization_processing_run_id=normalization.processing_run_id,
                 execution_context=execution_context,
             )
+        resolution = None
+        if any(
+            binding.enabled and "entity_resolution" in binding.capabilities
+            for binding in manifest.bindings
+        ):
+            if discovery is None:
+                raise ValueError(
+                    "entity_resolution exige un binding entity_discovery actif "
+                    "dans la même exécution Pipeline_A."
+                )
+            resolution = self.execute_entity_resolution(
+                session,
+                manifest=manifest,
+                document_version_id=document_version_id,
+                discovery_processing_run_id=discovery.processing_run_id,
+                execution_context=execution_context,
+            )
         return DocumentPipelineExecutionResult(
             perception=perception,
             normalization=normalization,
             discovery=discovery,
+            resolution=resolution,
         )
 
     @staticmethod
@@ -498,6 +617,7 @@ class DocumentPipelineExecutionResult:
     perception: ManifestExecutionResult
     normalization: ManifestExecutionResult
     discovery: ManifestExecutionResult | None = None
+    resolution: ManifestExecutionResult | None = None
 
 
 def build_kaliok_runtime_registry() -> ComponentRuntimeRegistry:
@@ -517,6 +637,11 @@ def build_kaliok_runtime_registry() -> ComponentRuntimeRegistry:
         "candidate-discovery-v1",
         KaliokDiscoveryAdapter(),
     )
+    registry.register(
+        "kaliok-entity-resolution",
+        "declared-normalized-exact-v1",
+        KaliokEntityResolutionAdapter(),
+    )
     return registry
 
 
@@ -526,6 +651,7 @@ __all__ = [
     "KaliokPerceptionAdapter",
     "KaliokNormalizationAdapter",
     "KaliokDiscoveryAdapter",
+    "KaliokEntityResolutionAdapter",
     "ManifestExecutionResult",
     "ManifestExecutionService",
     "NormalizationRuntimeAdapter",

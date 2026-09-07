@@ -33,6 +33,7 @@ from kaliok.storage.models import (
     DiscoveredCandidate,
     Document,
     DocumentVersion,
+    EntityResolutionScopeItem,
     NormalizedContentUnit,
     NormalizedContentUnitSource,
     Page,
@@ -161,6 +162,23 @@ def _document_pipeline_with_discovery_manifest() -> PipelineManifest:
                     }],
                 },
                 dependencies=("normalization",),
+            ),
+        ),
+    )
+
+
+def _document_pipeline_with_resolution_manifest() -> PipelineManifest:
+    manifest = _document_pipeline_with_discovery_manifest()
+    return PipelineManifest(
+        pipeline_key=manifest.pipeline_key,
+        revision=manifest.revision,
+        bindings=manifest.bindings + (
+            ComponentBinding(
+                binding_key="resolution",
+                component_key="kaliok-entity-resolution",
+                component_version="declared-normalized-exact-v1",
+                capabilities=("entity_resolution",),
+                dependencies=("discovery",),
             ),
         ),
     )
@@ -397,6 +415,159 @@ def test_manifest_pipeline_chains_explicit_discovery_from_its_normalization_run(
     assert len(candidates) == 1
     assert candidates[0].raw_value == "Perception"
     assert candidates[0].processing_run_id == result.discovery.processing_run_id
+
+
+def test_manifest_pipeline_chains_entity_resolution_from_current_discovery_run(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    manifest = _document_pipeline_with_resolution_manifest()
+    context = ExecutionContext(environment="experiment", execution_group_id=uuid4())
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+
+    result = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    ).execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=context,
+    )
+
+    assert result.discovery is not None
+    assert result.resolution is not None
+    runs = session.exec(
+        select(ProcessingRun).where(
+            ProcessingRun.execution_group_id == context.execution_group_id
+        )
+    ).all()
+    assert {run.process_type for run in runs} == {
+        "document_extraction",
+        "content_normalization",
+        "candidate_discovery",
+        "entity_resolution",
+    }
+    assert {run.execution_environment for run in runs} == {"experiment"}
+    assert {run.configuration["pipeline"]["manifest_hash"] for run in runs} == {
+        manifest.manifest_hash
+    }
+    resolution_run = session.get(ProcessingRun, result.resolution.processing_run_id)
+    assert resolution_run is not None
+    assert resolution_run.configuration["discovery_processing_run_id"] == str(
+        result.discovery.processing_run_id
+    )
+    scoped_candidate_ids = {
+        item.discovered_candidate_id
+        for item in session.exec(
+            select(EntityResolutionScopeItem).where(
+                EntityResolutionScopeItem.processing_run_id == resolution_run.id
+            )
+        ).all()
+    }
+    current_candidate_ids = {
+        item.id
+        for item in session.exec(
+            select(DiscoveredCandidate).where(
+                DiscoveredCandidate.processing_run_id == result.discovery.processing_run_id
+            )
+        ).all()
+    }
+    assert scoped_candidate_ids == current_candidate_ids
+    assert resolution_run.metrics["entity_count"] > 0
+
+
+def test_entity_resolution_disabled_is_not_executed(session: Session, monkeypatch):
+    version = _document_version(session)
+    manifest = _document_pipeline_with_resolution_manifest()
+    disabled = tuple(
+        ComponentBinding(
+            binding_key=binding.binding_key,
+            component_key=binding.component_key,
+            component_version=binding.component_version,
+            capabilities=binding.capabilities,
+            configuration=binding.configuration,
+            dependencies=binding.dependencies,
+            enabled=False if binding.binding_key == "resolution" else binding.enabled,
+        )
+        for binding in manifest.bindings
+    )
+    manifest = PipelineManifest(
+        pipeline_key=manifest.pipeline_key,
+        revision=manifest.revision,
+        bindings=disabled,
+    )
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+
+    result = ManifestExecutionService(
+        build_kaliok_component_registry(),
+        build_kaliok_runtime_registry(),
+    ).execute_document_pipeline(
+        session,
+        manifest=manifest,
+        document_version_id=version.id,
+        execution_context=ExecutionContext(environment="experiment"),
+    )
+
+    assert result.resolution is None
+    assert session.exec(
+        select(ProcessingRun).where(
+            ProcessingRun.document_version_id == version.id,
+            ProcessingRun.process_type == "entity_resolution",
+        )
+    ).all() == []
+
+
+def test_entity_resolution_configuration_is_rejected_without_false_success(
+    session: Session,
+    monkeypatch,
+):
+    version = _document_version(session)
+    manifest = _document_pipeline_with_resolution_manifest()
+    bindings = list(manifest.bindings)
+    resolution = bindings[-1]
+    bindings[-1] = ComponentBinding(
+        binding_key=resolution.binding_key,
+        component_key=resolution.component_key,
+        component_version=resolution.component_version,
+        capabilities=resolution.capabilities,
+        configuration={"strategy": "unsupported"},
+        dependencies=resolution.dependencies,
+    )
+    manifest = PipelineManifest(
+        pipeline_key=manifest.pipeline_key,
+        revision=manifest.revision,
+        bindings=tuple(bindings),
+    )
+    monkeypatch.setattr(
+        "kaliok.pipeline.runtime.read_document",
+        lambda path: _mock_document_content(),
+    )
+
+    with pytest.raises(ValueError, match="Configuration non supportée"):
+        ManifestExecutionService(
+            build_kaliok_component_registry(),
+            build_kaliok_runtime_registry(),
+        ).execute_document_pipeline(
+            session,
+            manifest=manifest,
+            document_version_id=version.id,
+            execution_context=ExecutionContext(environment="experiment"),
+        )
+
+    assert session.exec(
+        select(ProcessingRun).where(
+            ProcessingRun.document_version_id == version.id,
+            ProcessingRun.process_type == "entity_resolution",
+        )
+    ).all() == []
 
 
 def test_discovery_adapter_requires_explicit_detector_terms():
