@@ -1,31 +1,41 @@
 {% extends "core_ui/base.html" %}{% load static %}
 {% block title %}Laboratoire RAG — kaliok{% endblock %}
 {% block content %}
-<p class="eyebrow">Expérimenter simplement</p><h1>Laboratoire RAG</h1><p class="lead">Testez les réponses de l’IA sur vos documents et comparez ses réglages.</p>{% if run_result %}<span class="visually-hidden">Demandés</span>{% endif %}
+<p class="eyebrow">Composer, exécuter, inspecter</p><h1>Laboratoire RAG</h1><p class="lead">La composition affichée vient des révisions et bindings persistés dans PostgreSQL.</p>{% if run_result %}<span class="visually-hidden">Demandés</span>{% endif %}
 {% if notice %}<p class="alert">{{ notice }}</p>{% endif %}{% if action_error %}<p class="alert error">{{ action_error }}</p>{% endif %}{% for error in api_errors %}<p class="alert error">{{ error }}</p>{% endfor %}
-<nav class="tabs lab-navigation" aria-label="Laboratoire" data-lab-navigation data-initial-tab="{% if active_tab == 'results' or active_tab == 'history' or active_tab == 'discovery' or active_tab == 'entity_resolution' or active_tab == 'experiment' or active_tab == 'settings' %}{% if active_tab == 'settings' or active_tab == 'discovery' or active_tab == 'entity_resolution' or active_tab == 'experiment' %}historical_tools{% else %}historical_tools{% endif %}{% else %}pipeline{% endif %}" data-initial-tool="{% if active_tab == 'discovery' or active_tab == 'entity_resolution' or active_tab == 'results' or active_tab == 'history' or active_tab == 'settings' %}{{ active_tab }}{% else %}experiment{% endif %}">
-  <button class="tab-button" data-tab="pipeline" aria-selected="false">Pipeline</button>
-  <button class="tab-button" data-tab="inspection" aria-selected="false">Inspection</button>
-  <button class="tab-button" data-tab="history" aria-selected="false">Historique</button>
-  <button class="tab-button" data-tab="historical_tools" aria-selected="false">Outils historiques</button>
+<nav class="tabs lab-navigation" aria-label="Laboratoire" data-lab-navigation data-initial-tab="{% if active_tab == 'results' or active_tab == 'history' or active_tab == 'discovery' or active_tab == 'entity_resolution' or active_tab == 'experiment' or active_tab == 'settings' %}historical_tools{% else %}composer{% endif %}" data-initial-tool="{% if active_tab == 'discovery' or active_tab == 'entity_resolution' or active_tab == 'results' or active_tab == 'history' or active_tab == 'settings' %}{{ active_tab }}{% else %}experiment{% endif %}">
+  <button class="tab-button" data-tab="composer" aria-selected="false">Composer</button>
+  <button class="tab-button" data-tab="execute" aria-selected="false">Exécuter</button>
+  <button class="tab-button" data-tab="inspect" aria-selected="false">Inspecter</button>
+  <button class="tab-button" data-tab="compare" aria-selected="false">Comparer</button>
+  <button class="tab-button" data-tab="catalogue" aria-selected="false">Catalogue</button>
+  <button class="tab-button secondary-tab" data-tab="historical_tools" aria-selected="false">Héritage / outils historiques</button>
 </nav>
 
-<section data-lab-panel="pipeline" class="lab-work-panel">
+<section data-lab-panel="composer" class="lab-work-panel">
   {% include "core_ui/_pipeline_laboratory.html" %}
 </section>
 
-<section data-lab-panel="inspection" class="lab-work-panel" hidden>
-  <article class="card" data-pipeline-result>
-    <p class="eyebrow">Inspection de l’exécution sélectionnée</p><h2>Prêt à inspecter</h2><p class="muted">Lancez Pipeline_A ou sélectionnez une exécution dans Historique pour inspecter un artefact à la fois.</p>
+<section data-lab-panel="execute" class="lab-work-panel" hidden>
+  <article class="card execute-panel" data-execute-panel>
+    <p class="eyebrow">Exécuter</p><h2>Lancer la draft</h2><p class="muted">Le runtime utilisera la PipelineRevision de gestation persistée.</p>
+    <label>Document réel<select data-execute-document>{% for document in pipeline_lab.documents %}<option value="{{ document.document_version_id }}" {% if pipeline_lab.selected_document.document_version_id == document.document_version_id %}selected{% endif %}>{{ document.filename }} · v{{ document.version_number }} · {{ document.processing_status }}</option>{% endfor %}</select></label>
+    <div class="execute-summary" data-execute-summary><strong>Pipeline utilisé : Gestation · Révision {{ pipeline_lab.draft_revision.revision_number }}</strong><span>{% for binding in pipeline_lab.pipeline_experiment.bindings %}{{ binding.display_name }}{% if not forloop.last %} · {% endif %}{% empty %}Aucun intervenant{% endfor %}</span></div>
+    <button type="button" data-execute-run {% if not pipeline_lab.selected_document.executable %}disabled{% endif %}>Lancer Pipeline_A</button><span class="pipeline-status" data-execute-status role="status" aria-live="polite"></span>
   </article>
 </section>
 
-<section data-lab-panel="history" class="lab-work-panel" hidden>
+<section data-lab-panel="inspect" class="lab-work-panel" hidden>
   <article class="card">
-    <div class="section-head"><div><p class="eyebrow">Pipeline_A expérimental</p><h2>Exécutions du document</h2></div><span class="help">Historique séparé des outils historiques.</span></div>
-    <div data-pipeline-history>{% for item in pipeline_lab.history %}<button type="button" class="history-card pipeline-history-button" data-pipeline-history="{{ item.execution_group_id }}"><span>{{ item.started_at|default:"Date inconnue" }} · {{ item.pipeline_key }} / {{ item.revision }}</span><span class="badge {{ item.status }}">{{ item.status }}</span></button>{% empty %}<p class="muted">Aucune exécution expérimentale disponible.</p>{% endfor %}</div>
+    <p class="eyebrow">Inspecter</p><h2>Exécutions de la révision sélectionnée</h2><p class="muted">Choisissez un run, puis chargez les artefacts de l’intervenant à la demande.</p>
+    <div data-pipeline-inspect-history>{% for item in pipeline_lab.history %}<button type="button" class="history-card pipeline-history-button" data-pipeline-history="{{ item.execution_group_id }}"><span>{{ item.started_at|default:"Date inconnue" }} · Gestation / {{ item.revision }}</span><span class="badge {{ item.status }}">{{ item.status }}</span></button>{% empty %}<p class="muted">Aucune exécution expérimentale disponible.</p>{% endfor %}</div>
   </article>
+  <article class="card" data-pipeline-result><p class="eyebrow">Étapes réellement exécutées</p><h2>Prêt à inspecter</h2><p class="muted">Sélectionnez une exécution dans la liste.</p></article>
 </section>
+
+<section data-lab-panel="compare" class="lab-work-panel" hidden><article class="card compare-panel"><p class="eyebrow">Comparer</p><h2>Comparaisons utiles</h2><div class="compare-actions"><button type="button" class="secondary" data-compare="manifest">Production vs gestation</button><button type="button" class="secondary" data-compare="runs">Run A vs run B</button><button type="button" class="secondary" data-compare="revision">Révision N vs N+1</button></div><div data-compare-result><p class="muted">Choisissez une comparaison.</p></div></article></section>
+
+<section data-lab-panel="catalogue" class="lab-work-panel" hidden><article class="card catalogue-panel"><p class="eyebrow">Catalogue PostgreSQL</p><h2>Composants, versions et capacités</h2><p class="muted">Ce catalogue décrit les outils disponibles. Il n’édite pas directement le pipeline.</p><div class="catalogue-list" data-catalogue-list>{% for component in pipeline_lab.catalogue %}<article class="catalogue-card"><div class="section-head"><div><h3>{{ component.display_name }}</h3><p class="muted">{{ component.version }}</p></div><span class="status-label">{{ component.runtime_status }}</span></div><p>{{ component.description }}</p><p><strong>Capabilities fournies</strong> : {% for capability in component.capabilities %}{{ capability.role_label }}{% if not forloop.last %} · {% endif %}{% empty %}Aucune{% endfor %}</p><div class="catalogue-capabilities">{% for capability in component.capabilities %}<span class="catalogue-capability"><strong>{{ capability.role_label }}</strong><small>{{ capability.invocation_mode }}{% if capability.execution_bundle_key %} · bundle {{ capability.execution_bundle_key }}{% endif %}</small></span>{% endfor %}</div><details><summary>Schéma de configuration et détails techniques</summary><dl class="technical-list"><dt>component_key</dt><dd>{{ component.component_key }}</dd><dt>runtime status</dt><dd>{{ component.runtime_status }}</dd><dt>configuration_schema</dt><dd><pre>{{ component.configuration_schema }}</pre></dd></dl></details></article>{% empty %}<p class="muted">Catalogue vide.</p>{% endfor %}</div></article></section>
 
 <section data-lab-panel="historical_tools" class="lab-work-panel historical-tools" hidden>
   <nav class="subtabs" aria-label="Outils historiques">
@@ -66,4 +76,4 @@
   {% if profile.retired_revisions %}<details class="retired-group"><summary>Anciennes versions ({{ profile.retired_revisions|length }})</summary><div>{% for revision in profile.retired_revisions %}{% include "core_ui/_configuration_version.html" with revision=revision action_label="Consulter" %}{% endfor %}</div></details>{% endif %}
 </article>{% empty %}<article class="card">Aucun profil disponible.</article>{% endfor %}</section>
 </section>
-{% endblock %}{% block scripts %}<script src="{% static 'core_ui/rag_laboratory.js' %}?v=entity-resolution-1"></script>{% endblock %}
+{% endblock %}{% block scripts %}<script src="{% static 'core_ui/rag_laboratory.js' %}?v=legacy-tools"></script><script src="{% static 'core_ui/rag_lab_v2.js' %}?v=pipeline-bindings-v1"></script>{% endblock %}

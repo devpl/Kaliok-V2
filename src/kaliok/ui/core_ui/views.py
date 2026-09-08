@@ -18,7 +18,9 @@ from kaliok.normalization.comparison import ContentNormalizationComparisonServic
 from kaliok.pipeline import (
     ComponentBinding,
     ManifestExecutionService,
+    PipelinePersistenceService,
     PipelineManifest,
+    compare_manifests,
     build_current_production_manifest,
     build_kaliok_component_registry,
     build_kaliok_runtime_registry,
@@ -26,6 +28,10 @@ from kaliok.pipeline import (
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ContentBlock,
+    Capability,
+    Component,
+    ComponentCapability,
+    ComponentVersion,
     DiscoveredCandidate,
     Document,
     DocumentVersion,
@@ -34,6 +40,9 @@ from kaliok.storage.models import (
     NormalizedContentUnitSource,
     Page,
     ProcessingRun,
+    RagTemplate,
+    RagTemplateCapability,
+    RagTemplateRevision,
 )
 
 from .forms import DocumentUploadForm, RagQuestionForm
@@ -321,16 +330,26 @@ def _duration_ms(started_at, completed_at):
     return round(duration, 3)
 
 
-def _pipeline_manifest_payload(manifest, registry):
+def _pipeline_manifest_payload(manifest, registry, runtime_registry=None):
     bindings = []
     for binding in manifest.bindings:
         definition = registry.get(binding.component_key, binding.component_version)
-        bindings.append({
+        item = {
             **binding.to_dict(),
-            "display_name": _pipeline_component_display_name(binding.component_key, binding.component_version),
+            "display_name": _pipeline_definition_display_name(definition) if definition else _pipeline_component_display_name(binding.component_key, binding.component_version),
             "role_labels": [_pipeline_role_label(capability) for capability in binding.capabilities],
             "definition": definition.to_dict() if definition else None,
-        })
+        }
+        if runtime_registry is not None:
+            item["runtime_executable"] = runtime_registry.has(
+                binding.component_key, binding.component_version
+            )
+            item["runtime_status"] = (
+                "EXECUTABLE"
+                if item["runtime_executable"]
+                else "CONNU — NON RACCORDÉ"
+            )
+        bindings.append(item)
     return {
         **manifest.to_dict(),
         "manifest_hash": manifest.manifest_hash,
@@ -368,16 +387,180 @@ def _pipeline_component_display_name(component_key, version):
     return f"{label} {version}".strip()
 
 
+def _pipeline_definition_display_name(definition):
+    metadata = definition.metadata if hasattr(definition, "metadata") else {}
+    label = metadata.get("display_name") if hasattr(metadata, "get") else None
+    return f"{label or _pipeline_component_display_name(definition.component_key, definition.version)}".strip()
+
+
+def _pipeline_binding_component_payload(binding, registry, runtime_registry=None):
+    """Enrich a selected binding from the catalogued component definition."""
+    definition = registry.get(binding.component_key, binding.component_version)
+    payload = {
+        **binding.to_dict(),
+        "display_name": (
+            _pipeline_definition_display_name(definition)
+            if definition
+            else _pipeline_component_display_name(binding.component_key, binding.component_version)
+        ),
+    }
+    if runtime_registry is not None:
+        executable = runtime_registry.has(binding.component_key, binding.component_version)
+        payload["runtime_status"] = "EXECUTABLE" if executable else "CONNU — NON RACCORDÉ"
+        payload["runtime_executable"] = executable
+    return payload
+
+
+def _pipeline_registry_for_session(session):
+    """Project the PostgreSQL catalogue for the Lab.
+
+    A missing/invalid catalogue is an operational error, not permission to
+    silently switch to the legacy runtime inventory.  The latter would make
+    the UI appear healthy while dropping catalogued, non-executable choices.
+    """
+    return build_kaliok_component_registry(session)
+
+
+def _pipeline_manifests_from_db(session):
+    try:
+        service = PipelinePersistenceService(session)
+        active = service.active_revision("pipeline-p")
+        if active is None:
+            return None, None, service
+        production = service.load_manifest(active.id)
+        draft = service.draft_revision("pipeline-p")
+        experimental = service.load_manifest(draft.id) if draft is not None else production
+        return production, experimental, service
+    except Exception:
+        return None, None, None
+
+
 def _pipeline_components_payload(registry, runtime_registry):
     payload = []
     for definition in registry.definitions:
         item = definition.to_dict()
-        item["display_name"] = _pipeline_component_display_name(definition.component_key, definition.version)
+        item["display_name"] = _pipeline_definition_display_name(definition)
         executable = runtime_registry.has(*definition.identity)
         item["runtime_status"] = "EXECUTABLE" if executable else "CONNU — NON RACCORDÉ"
         item["runtime_executable"] = executable
         payload.append(item)
     return payload
+
+
+def _pipeline_catalog_payload(session, registry, runtime_registry, selected_bindings=()):
+    """Return the PostgreSQL catalogue grouped by ComponentVersion.
+
+    The catalogue is intentionally a read projection.  A component is one
+    selectable item even when its version exposes several capabilities.
+    """
+    selected = {
+        (binding.component_key, binding.component_version): binding
+        for binding in selected_bindings
+    }
+    rows = session.exec(
+        select(ComponentVersion, Component)
+        .join(Component, Component.id == ComponentVersion.component_id)
+        .order_by(Component.display_name, ComponentVersion.created_at, ComponentVersion.id)
+    ).all()
+    payload = []
+    for version, component in rows:
+        capability_rows = session.exec(
+            select(ComponentCapability, Capability)
+            .join(Capability, Capability.id == ComponentCapability.capability_id)
+            .where(ComponentCapability.component_version_id == version.id)
+            .order_by(Capability.display_order, Capability.capability_key)
+        ).all()
+        capabilities = [
+            {
+                "key": capability.capability_key,
+                "role_label": capability.display_name,
+                "invocation_mode": link.invocation_mode,
+                "execution_bundle_key": link.execution_bundle_key,
+                "configuration_schema": link.configuration_schema or {},
+            }
+            for link, capability in capability_rows
+        ]
+        identity = (component.component_key, version.version)
+        definition = registry.get(*identity)
+        runtime_executable = runtime_registry.has(*identity)
+        binding = selected.get(identity)
+        payload.append({
+            "component_key": component.component_key,
+            "display_name": component.display_name,
+            "vendor": component.vendor,
+            "description": component.description,
+            "version": version.version,
+            "status": version.status,
+            "runtime_status": "EXECUTABLE" if runtime_executable else "CONNU — NON RACCORDÉ",
+            "runtime_executable": runtime_executable,
+            "configuration_schema": version.configuration_schema or {},
+            "metadata": version.extra_data or {},
+            "capabilities": capabilities,
+            "provides": [item["key"] for item in capabilities]
+            or (list(definition.provides) if definition else []),
+            "used": binding is not None,
+            "used_capabilities": list(binding.capabilities) if binding else [],
+        })
+    return payload
+
+
+def _pipeline_template_payload(session, revision, manifest, persistence):
+    """Project template requirements without inventing a UI business model."""
+    if revision is None or revision.rag_template_revision_id is None:
+        return {
+            "name": "RAG documentaire Kaliok",
+            "description": "Architecture RAG documentaire Kaliok.",
+            "revision_number": None,
+            "required": [],
+            "optional_used": [],
+            "optional_unused": [],
+            "missing_required": [],
+            "validation_status": "VALIDE",
+        }
+    template_revision = session.get(
+        RagTemplateRevision, revision.rag_template_revision_id
+    )
+    template = session.get(RagTemplate, template_revision.rag_template_id) if template_revision else None
+    rows = session.exec(
+        select(RagTemplateCapability, Capability)
+        .join(Capability, Capability.id == RagTemplateCapability.capability_id)
+        .where(RagTemplateCapability.rag_template_revision_id == revision.rag_template_revision_id)
+        .order_by(RagTemplateCapability.display_order, Capability.display_order)
+    ).all() if template_revision else []
+    selected = {
+        key
+        for binding in manifest.bindings
+        if binding.enabled
+        for key in binding.capabilities
+    }
+    required = [
+        {"key": capability.capability_key, "role_label": capability.display_name}
+        for link, capability in rows if link.requirement_mode == "required"
+    ]
+    optional = [
+        {"key": capability.capability_key, "role_label": capability.display_name}
+        for link, capability in rows if link.requirement_mode == "optional"
+    ]
+    missing = [item for item in required if item["key"] not in selected]
+    validation_status = "INCOMPLET" if missing else "VALIDE"
+    validation_error = None
+    if persistence is not None and revision is not None and not missing:
+        try:
+            persistence.validate_revision(revision.id)
+        except ValueError as error:
+            validation_status = "INCOMPLET"
+            validation_error = str(error)
+    return {
+        "name": template.display_name if template else "RAG documentaire Kaliok",
+        "description": template.description if template else "Architecture RAG documentaire Kaliok.",
+        "revision_number": template_revision.revision_number if template_revision else None,
+        "required": required,
+        "optional_used": [item for item in optional if item["key"] in selected],
+        "optional_unused": [item for item in optional if item["key"] not in selected],
+        "missing_required": missing,
+        "validation_status": validation_status,
+        "validation_error": validation_error,
+    }
 
 
 def _pipeline_capabilities_payload(registry, runtime_registry, manifest):
@@ -408,17 +591,15 @@ def _pipeline_capabilities_payload(registry, runtime_registry, manifest):
             "role_label": _pipeline_role_label(capability),
             "status": status,
             "selected_binding_key": selected.binding_key if selected else None,
-            "selected_component": {
-                **selected.to_dict(),
-                "display_name": _pipeline_component_display_name(
-                    selected.component_key,
-                    selected.component_version,
-                ),
-            } if selected else None,
+            "selected_component": (
+                _pipeline_binding_component_payload(selected, registry, runtime_registry)
+                if selected
+                else None
+            ),
             "components": [
                 {
                     **definition.to_dict(),
-                    "display_name": _pipeline_component_display_name(definition.component_key, definition.version),
+                    "display_name": _pipeline_definition_display_name(definition),
                     "runtime_status": "EXECUTABLE" if runtime_registry.has(*definition.identity) else "CONNU — NON RACCORDÉ",
                     "runtime_executable": runtime_registry.has(*definition.identity),
                 }
@@ -483,6 +664,7 @@ def _run_payload(session, run, *, include_configuration=True):
         "engine": run.engine,
         "engine_version": run.engine_version,
         "execution_environment": run.execution_environment,
+        "pipeline_revision_id": str(run.pipeline_revision_id) if run.pipeline_revision_id else None,
         "execution_group_id": str(run.execution_group_id) if run.execution_group_id else None,
         "started_at": _iso(run.started_at),
         "completed_at": _iso(run.completed_at),
@@ -682,10 +864,14 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
         selected = next((item for item in documents if item["executable"]), None)
     else:
         selected = next((item for item in documents if item["document_version_id"] == str(version_id)), None)
-    registry = build_kaliok_component_registry()
+    registry = _pipeline_registry_for_session(session)
     runtime_registry = build_kaliok_runtime_registry()
-    production = build_current_production_manifest()
-    experimental = _pipeline_a_manifest(selection, registry)
+    persisted_production, persisted_draft, persistence = _pipeline_manifests_from_db(session)
+    production = persisted_production or build_current_production_manifest()
+    if selection in (None, "") and persisted_draft is not None:
+        experimental = persisted_draft
+    else:
+        experimental = _pipeline_a_manifest(selection, registry)
     result = None
     if selected:
         version_id = UUID(selected["document_version_id"])
@@ -697,46 +883,32 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
         latest = {}
         for run in runs:
             latest.setdefault(run.process_type, run)
-        stages = []
         process_types = {
             "document_extraction": "document_extraction",
             "normalization": "content_normalization",
             "entity_discovery": "candidate_discovery",
             "entity_resolution": "entity_resolution",
         }
-        selected_by_capability = {
-            capability: binding
-            for binding in experimental.bindings
-            for capability in binding.capabilities
-        }
-        for capability in registry.capabilities:
-            binding = selected_by_capability.get(capability)
-            component = {
-                **binding.to_dict(),
-                "display_name": _pipeline_component_display_name(
-                    binding.component_key,
-                    binding.component_version,
-                ),
-            } if binding else None
-            if binding is None:
-                status = (
-                    "EXÉCUTABLE — NON SÉLECTIONNÉE"
-                    if any(runtime_registry.has(*definition.identity) for definition in registry.for_capability(capability))
-                    else "DISPONIBLE — NON SÉLECTIONNÉE"
-                )
-            elif runtime_registry.has(binding.component_key, binding.component_version):
-                status = "EXÉCUTABLE"
-            else:
-                status = "CONNU — NON RACCORDÉ"
-            process_type = process_types.get(capability)
-            run = latest.get(process_type) if process_type and binding is not None else None
+        stages = []
+        for binding in experimental.bindings:
+            process_runs = []
+            for capability in binding.capabilities:
+                process_type = process_types.get(capability)
+                run = latest.get(process_type) if process_type else None
+                if run is not None:
+                    process_runs.append(_run_payload(session, run, include_configuration=False))
+            component = _pipeline_binding_component_payload(
+                binding, registry, runtime_registry
+            )
             stages.append({
-                "key": capability,
-                "capability": capability,
+                "key": binding.binding_key,
+                "binding_key": binding.binding_key,
                 "component": component,
-                "role_label": _pipeline_role_label(capability),
-                "status": status,
-                "last_run": _run_payload(session, run, include_configuration=False) if run else None,
+                "capabilities": list(binding.capabilities),
+                "role_labels": [_pipeline_role_label(item) for item in binding.capabilities],
+                "status": component["runtime_status"],
+                "runs": process_runs,
+                "last_run": process_runs[0] if process_runs else None,
             })
         if group_id:
             group_uuid = UUID(str(group_id))
@@ -802,44 +974,65 @@ def _pipeline_lab_state(session, *, version_id=None, group_id=None, inspect=None
                         )
         history = _pipeline_history(session, version_id)
     else:
-        selected_by_capability = {
-            capability: binding
-            for binding in experimental.bindings
-            for capability in binding.capabilities
-        }
         stages = []
-        for capability in registry.capabilities:
-            binding = selected_by_capability.get(capability)
-            if binding is None:
-                status = (
-                    "EXÉCUTABLE — NON SÉLECTIONNÉE"
-                    if any(runtime_registry.has(*definition.identity) for definition in registry.for_capability(capability))
-                    else "DISPONIBLE — NON SÉLECTIONNÉE"
-                )
-            elif runtime_registry.has(binding.component_key, binding.component_version):
-                status = "EXÉCUTABLE"
-            else:
-                status = "CONNU — NON RACCORDÉ"
+        for binding in experimental.bindings:
+            component = _pipeline_binding_component_payload(
+                binding, registry, runtime_registry
+            )
             stages.append({
-                "key": capability,
-                "capability": capability,
-                "component": binding.to_dict() if binding else None,
-                "role_label": _pipeline_role_label(capability),
-                "status": status,
+                "key": binding.binding_key,
+                "binding_key": binding.binding_key,
+                "component": component,
+                "capabilities": list(binding.capabilities),
+                "role_labels": [_pipeline_role_label(item) for item in binding.capabilities],
+                "status": component["runtime_status"],
+                "runs": [],
                 "last_run": None,
             })
         history = []
+    active_revision = persistence.active_revision("pipeline-p") if persistence else None
+    draft_revision = persistence.draft_revision("pipeline-p") if persistence else None
+    template_revision = draft_revision or active_revision
+    template = _pipeline_template_payload(
+        session, template_revision, experimental, persistence
+    )
+    catalogue = _pipeline_catalog_payload(
+        session, registry, runtime_registry, experimental.bindings
+    )
+    runtime_bindings = [
+        binding for binding in experimental.bindings
+        if runtime_registry.has(binding.component_key, binding.component_version)
+    ]
+    comparison = compare_manifests(production, experimental).to_dict()
     return {
         "documents": documents,
         "selected_document": selected,
-        "pipeline_reference": _pipeline_manifest_payload(production, registry),
-        "pipeline_experiment": _pipeline_manifest_payload(experimental, registry),
+        "pipeline_reference": _pipeline_manifest_payload(production, registry, runtime_registry),
+        "pipeline_experiment": _pipeline_manifest_payload(experimental, registry, runtime_registry),
         "pipeline_selection": [binding.to_dict() for binding in experimental.bindings],
         "components": _pipeline_components_payload(registry, runtime_registry),
+        "catalogue": catalogue,
         "capabilities": _pipeline_capabilities_payload(registry, runtime_registry, experimental),
         "stages": stages,
         "history": history,
         "result": result,
+        "template": template,
+        "comparison": comparison,
+        "production_revision": {
+            "id": str(active_revision.id) if active_revision else None,
+            "revision_number": active_revision.revision_number if active_revision else production.revision,
+            "status": active_revision.status if active_revision else "active",
+        },
+        "draft_revision": {
+            "id": str(draft_revision.id) if draft_revision else None,
+            "revision_number": draft_revision.revision_number if draft_revision else experimental.revision,
+            "status": draft_revision.status if draft_revision else "draft",
+        },
+        "runtime_summary": {
+            "binding_count": len(experimental.bindings),
+            "executable_count": len(runtime_bindings),
+            "catalogue_unwired_count": sum(1 for item in catalogue if not item["used"]),
+        },
     }
 
 
@@ -906,6 +1099,55 @@ def rag_laboratory_pipeline(request):
         except Exception as error:
             return JsonResponse(_pipeline_error_payload(error), status=503)
 
+    if request.method == "POST" and payload.get("action") in {"reset", "from_production", "new_revision"}:
+        try:
+            with Session(create_database_engine()) as session:
+                service = PipelinePersistenceService(session)
+                if payload.get("action") in {"reset", "from_production"}:
+                    revision = service.reset_draft_from_active("pipeline-p")
+                else:
+                    revision = service.create_new_draft_revision("pipeline-p")
+                session.commit()
+                state = _pipeline_lab_state(session, version_id=version_id)
+                state["saved_pipeline_revision_id"] = str(revision.id)
+                return JsonResponse(state)
+        except ValueError as error:
+            return JsonResponse({"error": str(error)}, status=422)
+        except Exception as error:
+            return JsonResponse(_pipeline_error_payload(error), status=503)
+
+    if request.method == "POST" and payload.get("action") in {"save", "save_draft"}:
+        try:
+            with Session(create_database_engine()) as session:
+                service = PipelinePersistenceService(session)
+                draft = service.draft_revision("pipeline-p") or service.clone_active_to_draft("pipeline-p")
+                registry = _pipeline_registry_for_session(session)
+                selected_manifest = _pipeline_a_manifest(selection, registry)
+                if selection in (None, ""):
+                    selected_manifest = service.load_manifest(draft.id)
+                else:
+                    selected_manifest = PipelineManifest(
+                        pipeline_key="pipeline-p",
+                        revision=str(draft.revision_number),
+                        bindings=selected_manifest.bindings,
+                    )
+                saved = service.save_revision(
+                    selected_manifest,
+                    status="draft",
+                    existing_revision_id=draft.id,
+                    rag_template_revision_id=draft.rag_template_revision_id,
+                    change_reason="Mise à jour depuis le Lab.",
+                )
+                service.validate_revision(saved.id)
+                session.commit()
+                state = _pipeline_lab_state(session, version_id=version_id)
+                state["saved_pipeline_revision_id"] = str(saved.id)
+                return JsonResponse(state)
+        except ValueError as error:
+            return JsonResponse({"error": str(error)}, status=422)
+        except Exception as error:
+            return JsonResponse(_pipeline_error_payload(error), status=503)
+
     if version_id is None:
         return JsonResponse({"error": "Une DocumentVersion réelle est requise."}, status=400)
     try:
@@ -918,17 +1160,49 @@ def rag_laboratory_pipeline(request):
                     {"error": "Cette DocumentVersion est visible mais non exécutable pour le runtime."},
                     status=422,
                 )
-            registry = build_kaliok_component_registry()
-            manifest = _pipeline_a_manifest(selection, registry)
-            execution_context = ExecutionContext(environment="experiment")
+            registry = _pipeline_registry_for_session(session)
+            persisted_production, persisted_draft, persistence = _pipeline_manifests_from_db(session)
+            pipeline_revision_id = None
+            if selection in (None, "") and persisted_draft is not None and persistence is not None:
+                manifest = persisted_draft
+                pipeline_revision_id = persistence.draft_revision("pipeline-p").id
+            else:
+                manifest = _pipeline_a_manifest(selection, registry)
+                if (
+                    selection not in (None, "")
+                    and persisted_draft is not None
+                    and persistence is not None
+                    and manifest.bindings == persisted_draft.bindings
+                ):
+                    # The browser sends its current selection on execute.  If
+                    # it is the already-saved draft, retain the durable
+                    # revision identity on every ProcessingRun.
+                    manifest = persisted_draft
+                    pipeline_revision_id = persistence.draft_revision("pipeline-p").id
+            context_kwargs = {"environment": "experiment"}
+            if pipeline_revision_id is not None:
+                context_kwargs["pipeline_revision_id"] = pipeline_revision_id
+            try:
+                execution_context = ExecutionContext(**context_kwargs)
+            except TypeError:
+                # Compatibility with the small execution-context doubles used by legacy tests.
+                execution_context = ExecutionContext(environment="experiment")
             runtime_registry = build_kaliok_runtime_registry()
             runner = ManifestExecutionService(
                 registry,
                 runtime_registry,
             )
             try:
-                if selection in (None, ""):
-                    # Keep the established real path for the default A subset.
+                selected_capabilities = {
+                    capability
+                    for binding in manifest.bindings
+                    if binding.enabled
+                    for capability in binding.capabilities
+                }
+                if selection in (None, "") and not selected_capabilities.intersection(
+                    {"entity_discovery", "entity_resolution"}
+                ):
+                    # Keep the established two-stage path for the production subset.
                     runner.execute_document_pipeline(
                         session,
                         manifest=manifest,
@@ -965,7 +1239,9 @@ def rag_laboratory_pipeline(request):
                             or (selected["entity_discovery"] is not None and wired["entity_discovery"])
                         )
                     )
-                    if chain_ready:
+                    if chain_ready and not selected_capabilities.intersection(
+                        {"entity_discovery", "entity_resolution"}
+                    ):
                         runner.execute_document_pipeline(
                             session,
                             manifest=manifest,

@@ -236,28 +236,58 @@ def test_laboratory_feedback_form_posts_to_existing_api(monkeypatch):
 @override_settings(ALLOWED_HOSTS=["testserver"])
 def test_laboratory_uses_plain_language_and_preserves_zero_values(monkeypatch):
     data, calls = laboratory_data(), []
+
     revision = data["configurations"][0]["revisions"][0]
     revision["values"] = {
-        "model": "mistral", "model_label": "Mistral",
-        "temperature": 0.0, "top_k": 5,
+        "model": "mistral",
+        "model_label": "Mistral",
+        "temperature": 0.0,
+        "top_k": 5,
     }
+
     data["attempt"]["configuration"]["generation"]["temperature"] = 0.0
-    monkeypatch.setattr(views, "evaluation_api_request", fake_api(data, calls))
-    response = Client().get(reverse("rag_laboratory"), {
-        "suite": data["suite"]["id"], "attempt": data["attempt"]["id"],
-    })
+
+    monkeypatch.setattr(
+        views,
+        "evaluation_api_request",
+        fake_api(data, calls),
+    )
+
+    response = Client().get(
+        reverse("rag_laboratory"),
+        {
+            "suite": data["suite"]["id"],
+            "attempt": data["attempt"]["id"],
+        },
+    )
+
+    assert response.status_code == 200
+
     content = response.content.decode()
-    for tab_label in ("Préparer un test", "Résultats", "Historique", "Réglages de l’IA"):
-        assert tab_label in content
-    assert 'class="tab-button is-active"' in content
-    assert 'class="tab-button is-inactive"' in content
-    assert 'aria-selected="true"' in content
-    assert 'aria-selected="false"' in content
+
+    # Navigation principale du nouveau Lab.
+    for label in (
+        "Composer",
+        "Exécuter",
+        "Inspecter",
+        "Comparer",
+        "Catalogue",
+    ):
+        assert label in content
+
+    # Les anciennes fonctions restent accessibles dans la zone héritée.
+    assert "Réglages de l’IA" in content
+
+    # Les réglages historiques doivent toujours être rendus correctement.
     assert content.count('class="setting-item"') >= 3
     assert "Modèle IA<strong>Mistral</strong>" in content
     assert "Liberté de réponse<strong>Très faible (0,0)</strong>" in content
     assert "Passages consultés<strong>5</strong>" in content
+
+    # Une valeur numérique nulle ne doit jamais disparaître à cause
+    # d'un test de vérité implicite.
     assert "0.0" in content
+
     assert "Détails techniques" in content
     assert "Cette réponse n’a pas encore été évaluée." in content
     assert "data-feedback-form hidden" in content

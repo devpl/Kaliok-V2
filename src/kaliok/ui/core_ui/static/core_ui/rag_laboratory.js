@@ -359,6 +359,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const pipelineStatus = pipelineRoot?.querySelector("[data-pipeline-status]");
   const configStatus = pipelineRoot?.querySelector("[data-pipeline-config-status]");
   const pipelineRunButton = pipelineRoot?.querySelector("[data-pipeline-run]");
+  const pipelineSaveButton = pipelineRoot?.querySelector("[data-pipeline-save]");
+  const pipelineResetButton = pipelineRoot?.querySelector("[data-pipeline-reset]");
+  const pipelineNewRevisionButton = pipelineRoot?.querySelector("[data-pipeline-new-revision]");
   let pipelineSelection = [];
   const pipelineRoleLabels = Object.freeze({
     document_extraction: "Lecture du document",
@@ -444,7 +447,7 @@ document.addEventListener("DOMContentLoaded", () => {
     (manifest.bindings || []).forEach((binding) => {
       const row = document.createElement("div");
       row.className = "pipeline-binding";
-      pipelineText(row, "strong", `${componentTitle({ component_key: binding.component_key, version: binding.component_version })}${binding.enabled === false ? " · désactivé" : ""}`);
+      pipelineText(row, "strong", `${binding.display_name || componentTitle({ component_key: binding.component_key, version: binding.component_version })}${binding.enabled === false ? " · désactivé" : ""}`);
       pipelineText(row, "span", (binding.role_labels || binding.capabilities || []).map((role) => typeof role === "string" && pipelineRoleLabels[role] ? pipelineRole(role) : role).join(" · "));
       pipelineText(row, "small", "Rôles couverts par cet intervenant");
       const details = document.createElement("details");
@@ -805,7 +808,6 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const params = new URLSearchParams(extra);
       if (!params.has("document_version_id")) params.set("document_version_id", pipelineRoot.dataset.version || pipelineSelector?.value || "");
-      params.set("selection", JSON.stringify(selectionForPayload()));
       const state = await fetchJson(`${pipelineRoot.dataset.pipelineUrl}?${params}`);
       renderPipelineState(state);
       if (pipelineStatus) pipelineStatus.textContent = !state.selected_document ? "Aucun document exploitable disponible." : state.selected_document.executable ? "" : "Cette DocumentVersion est visible mais non exécutable pour le runtime.";
@@ -865,8 +867,27 @@ document.addEventListener("DOMContentLoaded", () => {
     finally { pipelineRunButton.disabled = !pipelineSelector?.selectedOptions[0]?.dataset.executable || false; }
   }
 
+  async function persistPipeline(action = "save") {
+    if (!pipelineRoot) return;
+    if (configStatus) configStatus.textContent = action === "save" ? "Enregistrement…" : "Mise à jour de la révision…";
+    try {
+      const response = await fetch(pipelineRoot.dataset.pipelineUrl, {
+        method: "POST", credentials: "same-origin",
+        headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
+        body: JSON.stringify({ action, document_version_id: pipelineSelector?.value || "", selection: selectionForPayload() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.error) throw new Error(payload.error || "La révision n’a pas pu être enregistrée.");
+      renderPipelineState(payload);
+      if (configStatus) configStatus.textContent = action === "save" ? "Brouillon enregistré dans PostgreSQL." : "Révision mise à jour.";
+    } catch (error) { if (configStatus) configStatus.textContent = `Enregistrement refusé : ${error.message}`; }
+  }
+
   pipelineSelector?.addEventListener("change", () => loadPipelineState({ document_version_id: pipelineSelector.value }));
   pipelineRunButton?.addEventListener("click", executePipeline);
+  pipelineSaveButton?.addEventListener("click", () => persistPipeline("save"));
+  pipelineResetButton?.addEventListener("click", () => persistPipeline("from_production"));
+  pipelineNewRevisionButton?.addEventListener("click", () => persistPipeline("new_revision"));
   pipelineRoot?.addEventListener("change", (event) => {
     const select = event.target.closest("[data-capability-select]");
     if (select) changeCapability(select.dataset.capability, select.value);

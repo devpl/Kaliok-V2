@@ -138,7 +138,7 @@ def test_pipeline_post_delegates_to_manifest_runtime_and_returns_group(monkeypat
     monkeypatch.setattr(views, "Session", lambda engine: FakeSession())
     monkeypatch.setattr(views, "ExecutionContext", FakeExecutionContext)
     monkeypatch.setattr(views, "ManifestExecutionService", FakeRunner)
-    monkeypatch.setattr(views, "build_kaliok_component_registry", lambda: object())
+    monkeypatch.setattr(views, "build_kaliok_component_registry", lambda session: object())
     monkeypatch.setattr(views, "build_kaliok_runtime_registry", lambda: object())
     monkeypatch.setattr(views, "_pipeline_lab_state", lambda session, **kwargs: pipeline_state(version_id, group_id))
 
@@ -179,6 +179,12 @@ def test_real_registry_exposes_components_by_capability_and_runtime_state():
     assert by_key["normalization"]["status"] == "EXÉCUTABLE"
     assert by_key["entity_discovery"]["components"][0]["runtime_status"] == "EXECUTABLE"
     assert by_key["entity_resolution"]["components"][0]["runtime_status"] == "EXECUTABLE"
+    assert by_key["chunking"]["components"][0]["runtime_status"] == "CONNU — NON RACCORDÉ"
+    assert by_key["indexing"]["components"][0]["runtime_status"] == "CONNU — NON RACCORDÉ"
+    assert by_key["entity_discovery"]["selected_component"] is None
+    assert by_key["entity_resolution"]["selected_component"] is None
+    assert by_key["chunking"]["selected_component"] is None
+    assert by_key["indexing"]["selected_component"] is None
 
 
 def test_pipeline_a_groups_one_web_component_across_capabilities_and_validates_scope():
@@ -278,6 +284,10 @@ def test_pipeline_js_does_not_shadow_dom_document():
     assert "forEach((document)" not in js
     assert "forEach((documentItem)" in js
     assert "document.createElement(\"option\")" in js
+    assert "(capability.components || []).forEach" in js
+    assert "state.capabilities" in js
+    assert "binding.display_name || componentTitle" in js
+    assert "params.set(\"selection\", JSON.stringify(selectionForPayload()))" not in js
     assert "Inspecter les entités" in js
 
 

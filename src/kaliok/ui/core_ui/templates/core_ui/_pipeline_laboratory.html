@@ -1,82 +1,40 @@
-<section id="pipeline-laboratory" class="pipeline-lab" data-pipeline-root data-pipeline-url="{{ pipeline_lab_url }}" aria-labelledby="pipeline-laboratory-title">
-  <div class="section-head">
-    <div>
-      <p class="eyebrow">Poste de construction du runtime</p>
-      <h2 id="pipeline-laboratory-title">Lab de composition · Pipeline en gestation (Pipeline_A)</h2>
-      <p class="lead">La chaîne ci-dessous est issue du ComponentRegistry réel. Pipeline_P reste une référence en lecture seule.</p>
-    </div>
-    <span class="badge">A · configurable</span>
-  </div>
-
+<section id="pipeline-laboratory" class="rag-lab-shell" data-rag-lab-root data-pipeline-url="{{ pipeline_lab_url }}" aria-labelledby="pipeline-laboratory-title">
   {% if pipeline_error %}
     <p class="alert error">Le Lab Pipeline est indisponible. Aucun document fictif n’est utilisé.</p>
     <details><summary>Détails techniques</summary><pre>{{ pipeline_error }}</pre></details>
   {% elif pipeline_lab %}
-    <div class="pipeline-controls card">
-      <label for="pipeline-document-selector">Document réel
-        <select id="pipeline-document-selector" data-pipeline-document>
-          {% for document in pipeline_lab.documents %}
-            <option value="{{ document.document_version_id }}" data-executable="{{ document.executable|yesno:'true,false' }}" {% if pipeline_lab.selected_document.document_version_id == document.document_version_id %}selected{% endif %}>{{ document.filename }} · v{{ document.version_number }} · {{ document.processing_status }}{% if document.page_count %} · {{ document.page_count }} page{{ document.page_count|pluralize }}{% endif %}</option>
-          {% empty %}<option value="">Aucun DocumentVersion disponible</option>{% endfor %}
-        </select>
-      </label>
-      {% if pipeline_lab.selected_document %}
-        <p class="help" data-pipeline-document-meta>{{ pipeline_lab.selected_document.title }} · hash {{ pipeline_lab.selected_document.file_hash_short|default:"—" }}</p>
-        <p class="alert" data-pipeline-document-warning {% if pipeline_lab.selected_document.executable %}hidden{% endif %}>Cette version reste visible mais ne peut pas être lancée : le runtime n’a pas de nombre de pages persistant.</p>
-      {% else %}<p class="alert">Aucun document exploitable disponible.</p>{% endif %}
-      <div class="pipeline-action">
-        <div><strong>Lancer les étapes exécutables</strong><p class="help">Le runtime lance uniquement les bindings raccordés et signale les autres. Les runs restent dans l’environnement expérimental.</p></div>
-        <button type="button" data-pipeline-run {% if not pipeline_lab.selected_document or not pipeline_lab.selected_document.executable %}disabled{% endif %}>Lancer Pipeline_A</button>
-      </div>
-      <p class="pipeline-status" data-pipeline-status role="status" aria-live="polite"></p>
-    </div>
+    <section class="lab-model-summary" aria-labelledby="pipeline-laboratory-title">
+      <div><p class="eyebrow">Modèle RAG</p><h2 id="pipeline-laboratory-title">{{ pipeline_lab.template.name|default:"RAG documentaire Kaliok" }}</h2><p class="muted">{{ pipeline_lab.template.description }}</p></div>
+      <div class="model-meta"><span>Révision du template</span><strong>{{ pipeline_lab.template.revision_number|default:"—" }}</strong></div>
+    </section>
 
-    <article class="card pipeline-composer">
-      <div class="section-head">
-        <div><p class="eyebrow">Chaîne connue</p><h3>Capabilities réellement enregistrées</h3></div>
-        <span class="help">Aucune capability absente du registry n’est ajoutée.</span>
-      </div>
-      <div class="pipeline-legend"><span class="status-dot executable">EXÉCUTABLE</span><span class="status-dot unwired">CONNU — NON RACCORDÉ</span><span class="status-dot unavailable">INDISPONIBLE</span></div>
-      <div class="pipeline-capability-list" data-pipeline-capabilities>
-        {% for capability in pipeline_lab.capabilities %}
-          <article class="pipeline-capability" data-capability-row data-capability="{{ capability.key }}">
-            <div class="pipeline-capability-head"><div><strong>{% if capability.selected_component %}{{ capability.selected_component.display_name }}{% else %}Aucun intervenant sélectionné{% endif %}</strong><span class="help">Étape {{ forloop.counter }} · {{ capability.role_label }}</span></div><span class="status-label" data-capability-status>{{ capability.status }}</span></div>
-            <label>Composant sélectionné
-              <select data-capability-select data-capability="{{ capability.key }}">
-                <option value="">Aucun composant sélectionné</option>
-                {% for component in capability.components %}<option value="{{ component.component_key }}@@{{ component.version }}" {% if capability.selected_component.component_key == component.component_key and capability.selected_component.component_version == component.version %}selected{% endif %}>{{ component.component_key }} @ {{ component.version }} · {{ component.runtime_status }}</option>{% endfor %}
-              </select>
-            </label>
-            <p class="help" data-capability-coverage>{% if capability.selected_component %}Binding {{ capability.selected_binding_key }}{% else %}Capability disponible mais non sélectionnée.{% endif %}</p>
-          </article>
-        {% empty %}<p class="muted">Aucune capability réelle n’est enregistrée.</p>{% endfor %}
-      </div>
-      <p class="pipeline-status" data-pipeline-config-status role="status" aria-live="polite"></p>
-    </article>
-
-    <div class="pipeline-grid">
-      <article class="card" data-pipeline-reference>
-        <p class="eyebrow">Pipeline de référence · lecture seule</p><h3>Pipeline_P</h3>
-        <p class="help">{{ pipeline_lab.pipeline_reference.description }}</p>
-        <p><span class="badge">Description partielle · {{ pipeline_lab.pipeline_reference.revision }}</span></p>
-        {% for binding in pipeline_lab.pipeline_reference.bindings %}<div class="pipeline-binding"><strong>{{ binding.display_name }}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>Rôles couverts par cet intervenant</small><details><summary>Détails techniques</summary><dl class="technical-list"><dt>binding_key</dt><dd>{{ binding.binding_key }}</dd><dt>component_key</dt><dd>{{ binding.component_key }}</dd><dt>capabilities</dt><dd>{{ binding.capabilities|join:", " }}</dd></dl></details></div>{% endfor %}
-        <details><summary>Détails techniques</summary><dl class="technical-list"><dt>pipeline_key</dt><dd>{{ pipeline_lab.pipeline_reference.pipeline_key }}</dd><dt>revision</dt><dd>{{ pipeline_lab.pipeline_reference.revision }}</dd><dt>manifest_hash</dt><dd>{{ pipeline_lab.pipeline_reference.manifest_hash }}</dd></dl></details>
+    <section class="pipeline-composition" aria-label="Composition du pipeline">
+      <article class="pipeline-column production-column" data-pipeline-production>
+        <div class="section-head"><div><p class="eyebrow">Production</p><h3>Révision {{ pipeline_lab.production_revision.revision_number }} · Active</h3></div><span class="badge active">Lecture seule</span></div>
+        <p class="help">Composition réellement utilisée par la production.</p>
+        <div class="binding-list">
+          {% for binding in pipeline_lab.pipeline_reference.bindings %}
+            <article class="pipeline-binding-card"><div class="binding-index">{{ forloop.counter }}</div><div class="binding-main"><strong>{{ binding.display_name }}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>{{ binding.runtime_status|default:"—" }}</small></div><details><summary>Détails techniques</summary><dl class="technical-list"><dt>binding_key</dt><dd>{{ binding.binding_key }}</dd><dt>component_key</dt><dd>{{ binding.component_key }}</dd><dt>version</dt><dd>{{ binding.component_version }}</dd><dt>capabilities</dt><dd>{{ binding.capabilities|join:", " }}</dd></dl></details></article>
+          {% empty %}<p class="muted">Aucun intervenant persistant.</p>{% endfor %}
+        </div>
       </article>
-      <article class="card" data-pipeline-experiment>
-        <p class="eyebrow">Manifest courant · construit par le serveur</p><h3>Pipeline_A</h3>
-        <p class="help">Un composant couvrant plusieurs capabilities apparaît ici comme un seul binding.</p>
-        <p><span class="badge">{{ pipeline_lab.pipeline_experiment.revision }}</span></p>
-        {% for binding in pipeline_lab.pipeline_experiment.bindings %}<div class="pipeline-binding"><strong>{{ binding.display_name }}{% if not binding.enabled %} · désactivé{% endif %}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>Rôles couverts par cet intervenant</small><details><summary>Configuration</summary><pre>{{ binding.configuration }}</pre></details></div>{% empty %}<p class="muted">Aucun binding sélectionné.</p>{% endfor %}
-        <details><summary>Détails manifest</summary><dl class="technical-list"><dt>pipeline_key</dt><dd>{{ pipeline_lab.pipeline_experiment.pipeline_key }}</dd><dt>revision</dt><dd>{{ pipeline_lab.pipeline_experiment.revision }}</dd><dt>manifest_hash</dt><dd>{{ pipeline_lab.pipeline_experiment.manifest_hash }}</dd></dl></details>
+
+      <article class="pipeline-column draft-column" data-pipeline-draft><span class="visually-hidden">Pipeline en gestation</span>
+        <div class="section-head"><div><p class="eyebrow">Gestation</p><h3>Révision {{ pipeline_lab.draft_revision.revision_number }} · Brouillon</h3></div><span class="badge draft">Éditable</span></div>
+        <p class="help">Les cartes correspondent uniquement aux PipelineBindings persistés.</p>
+        <div class="binding-list" data-draft-bindings>
+          {% for binding in pipeline_lab.pipeline_experiment.bindings %}
+            <article class="pipeline-binding-card editable-binding" data-binding-key="{{ binding.binding_key }}" data-component-key="{{ binding.component_key }}" data-component-version="{{ binding.component_version }}"><div class="binding-index">{{ forloop.counter }}</div><div class="binding-main"><strong>{{ binding.display_name }}</strong><span>{{ binding.role_labels|join:" · " }}</span><small>{{ binding.runtime_status|default:"—" }}</small></div><div class="binding-actions"><button type="button" class="link-button" data-binding-action="configure" data-binding-key="{{ binding.binding_key }}">Configurer</button><button type="button" class="link-button" data-binding-action="replace" data-binding-key="{{ binding.binding_key }}">Remplacer</button><button type="button" class="link-button danger-text" data-binding-action="remove" data-binding-key="{{ binding.binding_key }}">Retirer</button></div><details><summary>Détails techniques</summary><dl class="technical-list"><dt>binding_key</dt><dd>{{ binding.binding_key }}</dd><dt>component_key</dt><dd>{{ binding.component_key }}</dd><dt>version</dt><dd>{{ binding.component_version }}</dd><dt>capabilities</dt><dd>{{ binding.capabilities|join:", " }}</dd><dt>configuration</dt><dd><pre>{{ binding.configuration }}</pre></dd></dl></details></article>
+          {% empty %}<p class="muted">Aucun intervenant sélectionné.</p>{% endfor %}
+        </div>
+        <button type="button" class="add-component" data-add-component>+ Ajouter un intervenant</button>
       </article>
-    </div>
+    </section>
 
-    <article class="card">
-      <div class="section-head"><div><p class="eyebrow">État des bindings</p><h3>Disponibilité de chaque capability</h3></div><span class="help">Les résultats et artefacts ne sont chargés qu’à l’inspection.</span></div>
-      <div class="pipeline-stage-list" data-pipeline-stages>
-        {% for stage in pipeline_lab.stages %}<div class="pipeline-stage"><div><strong>{% if stage.component %}{{ stage.component.display_name }}{% else %}Aucun intervenant sélectionné{% endif %}</strong><span class="help">{{ stage.role_label }} · {{ stage.status }}</span></div><div>{% if stage.component %}<span>{{ stage.role_label }}</span>{% else %}<span class="muted">Choisir un intervenant dans Pipeline_A</span>{% endif %}<small>{% if stage.last_run %}Dernier run : {{ stage.last_run.status }} · {{ stage.last_run.artifact_count|default:"—" }} artefact{{ stage.last_run.artifact_count|pluralize }}{% else %}Aucun run chargé{% endif %}</small>{% if stage.last_run.execution_environment == "experiment" %}<button type="button" class="secondary" data-pipeline-inspect="{{ stage.key }}" data-pipeline-group="{{ stage.last_run.execution_group_id }}">Inspecter</button>{% endif %}</div></div>{% empty %}<p class="muted">Aucun étage connu.</p>{% endfor %}
-      </div>
-    </article>
+    <section class="draft-state card" data-draft-state><div><p class="eyebrow">État global de la draft</p><h3 data-composition-status>Composition : {{ pipeline_lab.template.validation_status }}</h3><p data-composition-message>{% if pipeline_lab.template.missing_required %}Fonction requise non couverte : {% for item in pipeline_lab.template.missing_required %}{{ item.role_label }}{% if not forloop.last %}, {% endif %}{% endfor %}{% else %}Toutes les fonctions requises du template sont couvertes.{% endif %}</p></div><div class="runtime-summary"><span>Runtime</span><strong data-runtime-status>{% if pipeline_lab.runtime_summary.binding_count == pipeline_lab.runtime_summary.executable_count %}Exécutable{% else %}Partiellement exécutable{% endif %}</strong><small>{{ pipeline_lab.runtime_summary.binding_count }} intervenant{{ pipeline_lab.runtime_summary.binding_count|pluralize }} · {{ pipeline_lab.runtime_summary.executable_count }} exécutable{{ pipeline_lab.runtime_summary.executable_count|pluralize }} · {{ pipeline_lab.runtime_summary.catalogue_unwired_count }} catalogué{{ pipeline_lab.runtime_summary.catalogue_unwired_count|pluralize }} non raccordé{{ pipeline_lab.runtime_summary.catalogue_unwired_count|pluralize }}</small></div><details><summary>Résumé du template</summary><p><strong>Fonctions requises</strong> : {% for item in pipeline_lab.template.required %}✓ {{ item.role_label }}{% if not forloop.last %} · {% endif %}{% empty %}Aucune{% endfor %}</p><p><strong>Fonctions optionnelles utilisées</strong> : {% for item in pipeline_lab.template.optional_used %}✓ {{ item.role_label }}{% if not forloop.last %} · {% endif %}{% empty %}Aucune{% endfor %}</p></details></section>
 
+    <div class="lab-actions" data-composer-actions><button type="button" data-pipeline-save>Enregistrer</button><button type="button" class="secondary" data-pipeline-reset>Repartir de la production</button><button type="button" class="secondary" data-pipeline-new-revision>Nouvelle révision</button><button type="button" class="secondary" data-pipeline-cancel>Annuler les modifications locales</button><span class="pipeline-status" data-pipeline-status role="status" aria-live="polite"></span></div>
+
+    <aside class="component-drawer" data-component-drawer hidden aria-labelledby="component-drawer-title"><div class="section-head"><div><p class="eyebrow">Catalogue PostgreSQL</p><h3 id="component-drawer-title">Ajouter un intervenant</h3></div><button type="button" class="secondary" data-close-drawer>Fermer</button></div><p class="help">Un intervenant est une ComponentVersion. Ses rôles sont regroupés sur une seule carte.</p><div class="catalogue-list" data-add-component-list></div></aside>
   {% endif %}
 </section>
