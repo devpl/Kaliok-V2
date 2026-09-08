@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from sqlmodel import Session
 
 from kaliok.hashing import canonical_json_hash
-from kaliok.storage.models import ConfigurationProfileRevision, ProcessingRun
+from kaliok.storage.models import ConfigurationProfileRevision, PipelineRevision, ProcessingRun
 
 
 ExecutionEnvironment = Literal["production", "experiment"]
@@ -20,6 +20,7 @@ class ExecutionContext:
 
     environment: ExecutionEnvironment
     configuration_revision_id: UUID | None = None
+    pipeline_revision_id: UUID | None = None
     execution_group_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:
@@ -47,8 +48,15 @@ def apply_execution_context(
                 "Révision de configuration introuvable : "
                 f"{context.configuration_revision_id}."
             )
+    if context.pipeline_revision_id is not None:
+        if session.get(PipelineRevision, context.pipeline_revision_id) is None:
+            raise ValueError(
+                "Révision de pipeline introuvable : "
+                f"{context.pipeline_revision_id}."
+            )
     run.execution_environment = context.environment
     run.configuration_revision_id = context.configuration_revision_id
+    run.pipeline_revision_id = context.pipeline_revision_id
     run.execution_group_id = context.execution_group_id
     run.configuration_hash = canonical_json_hash(run.configuration)
 

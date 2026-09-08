@@ -14,7 +14,7 @@ from kaliok.rag_runtime.postgres import (
 )
 
 
-def build_kaliok_component_registry() -> ComponentRegistry:
+def build_static_kaliok_component_registry() -> ComponentRegistry:
     """Build definitions from existing engine/strategy constants only.
 
     This registry deliberately describes a partial inventory. Components whose
@@ -113,4 +113,20 @@ def build_kaliok_component_registry() -> ComponentRegistry:
     )
 
 
-__all__ = ["build_kaliok_component_registry"]
+def build_kaliok_component_registry(session=None) -> ComponentRegistry:
+    """Return the DB projection when a session is supplied.
+
+    The no-argument form remains a compatibility fallback for legacy callers
+    and for environments before the catalogue migration/bootstrap is applied.
+    """
+    if session is None:
+        return build_static_kaliok_component_registry()
+    from kaliok.pipeline.persistence import build_component_registry_from_db
+
+    return build_component_registry_from_db(session)
+
+
+__all__ = [
+    "build_kaliok_component_registry",
+    "build_static_kaliok_component_registry",
+]

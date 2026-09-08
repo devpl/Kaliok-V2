@@ -11,7 +11,16 @@ from kaliok.pipeline.comparison import (
 from kaliok.pipeline.manifest import PipelineManifest
 from kaliok.pipeline.registry import ComponentRegistry
 from kaliok.pipeline.production import build_current_production_manifest
-from kaliok.pipeline.real_registry import build_kaliok_component_registry
+from kaliok.pipeline.real_registry import (
+    build_kaliok_component_registry,
+    build_static_kaliok_component_registry,
+)
+from kaliok.pipeline.persistence import (
+    PipelinePersistenceService,
+    bootstrap_catalog,
+    build_component_registry_from_db,
+    persist_manifest,
+)
 from kaliok.pipeline.runtime import (
     ComponentRuntimeRegistry,
     DocumentPipelineExecutionResult,
@@ -43,5 +52,10 @@ __all__ = [
     "ManifestExecutionService",
     "build_current_production_manifest",
     "build_kaliok_component_registry",
+    "build_static_kaliok_component_registry",
     "build_kaliok_runtime_registry",
+    "PipelinePersistenceService",
+    "bootstrap_catalog",
+    "build_component_registry_from_db",
+    "persist_manifest",
 ]

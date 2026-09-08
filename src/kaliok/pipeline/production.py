@@ -4,7 +4,23 @@ from kaliok.pipeline.components import ComponentBinding
 from kaliok.pipeline.manifest import PipelineManifest
 
 
-def build_current_production_manifest() -> PipelineManifest:
+def build_current_production_manifest(session=None) -> PipelineManifest:
+    """Project the active DB revision, with an explicit legacy fallback."""
+    if session is not None:
+        try:
+            from kaliok.pipeline.persistence import PipelinePersistenceService
+
+            service = PipelinePersistenceService(session)
+            revision = service.active_revision("pipeline-p")
+            if revision is not None:
+                return service.load_manifest(revision.id)
+        except Exception:
+            # The migration/bootstrap is intentionally not implicit.
+            pass
+    return _build_static_production_manifest()
+
+
+def _build_static_production_manifest() -> PipelineManifest:
     """Describe only the identifiable perception/normalization P subset."""
     return PipelineManifest(
         pipeline_key="pipeline-p",

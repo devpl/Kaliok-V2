@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import field_validator
-from sqlalchemy import CheckConstraint, Column, Index, String, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Column, Index, String, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, SQLModel
 
@@ -503,6 +503,18 @@ class ProcessingRun(SQLModel, table=True):
         default=None,
         foreign_key="configuration_profile_revisions.id",
         index=True,
+    )
+
+    # The Alembic migration adds the real FK.  Keeping this Column-level
+    # declaration avoids forcing legacy partial SQLModel test schemas to
+    # create the new catalogue tables as an implicit dependency.
+    pipeline_revision_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(
+            Uuid(),
+            nullable=True,
+            index=True,
+        ),
     )
 
     execution_group_id: UUID | None = Field(default=None, index=True)
@@ -1115,3 +1127,355 @@ class EvaluationCampaign(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class Capability(SQLModel, table=True):
+    """A stable function that can be provided by one or more components."""
+
+    __tablename__ = "capabilities"
+    __table_args__ = (
+        UniqueConstraint("capability_key", name="uq_capabilities_key"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    capability_key: str = Field(index=True)
+    display_name: str
+    description: str | None = None
+    phase_key: str | None = None
+    input_artifact_types: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    output_artifact_types: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    is_active: bool = True
+    display_order: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class Component(SQLModel, table=True):
+    """The real tool/intervenant, independent of a particular version."""
+
+    __tablename__ = "components"
+    __table_args__ = (
+        UniqueConstraint("component_key", name="uq_components_key"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    component_key: str = Field(index=True)
+    display_name: str
+    vendor: str | None = None
+    description: str | None = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ComponentVersion(SQLModel, table=True):
+    __tablename__ = "component_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "component_id",
+            "version",
+            name="uq_component_versions_component_version",
+        ),
+        CheckConstraint(
+            "status IN ('available', 'deprecated', 'unavailable')",
+            name="ck_component_versions_status",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    component_id: UUID = Field(foreign_key="components.id", index=True)
+    version: str
+    status: str = "available"
+    configuration_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ComponentCapability(SQLModel, table=True):
+    __tablename__ = "component_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "component_version_id",
+            "capability_id",
+            name="uq_component_capabilities_version_capability",
+        ),
+        CheckConstraint(
+            "invocation_mode IN ('independent', 'all_or_none', 'produced_with_bundle')",
+            name="ck_component_capabilities_invocation_mode",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    component_version_id: UUID = Field(
+        foreign_key="component_versions.id",
+        index=True,
+    )
+    capability_id: UUID = Field(foreign_key="capabilities.id", index=True)
+    invocation_mode: str = "independent"
+    execution_bundle_key: str | None = None
+    configuration_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class RagTemplate(SQLModel, table=True):
+    __tablename__ = "rag_templates"
+    __table_args__ = (
+        UniqueConstraint("template_key", name="uq_rag_templates_key"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    template_key: str = Field(index=True)
+    display_name: str
+    description: str | None = None
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class RagTemplateRevision(SQLModel, table=True):
+    __tablename__ = "rag_template_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "rag_template_id",
+            "revision_number",
+            name="uq_rag_template_revisions_number",
+        ),
+        CheckConstraint(
+            "revision_number > 0",
+            name="ck_rag_template_revisions_number_positive",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'retired')",
+            name="ck_rag_template_revisions_status",
+        ),
+        Index(
+            "uq_rag_template_revisions_single_active",
+            "rag_template_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rag_template_id: UUID = Field(foreign_key="rag_templates.id", index=True)
+    revision_number: int
+    status: str = "draft"
+    change_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    activated_at: datetime | None = None
+
+
+class RagTemplateCapability(SQLModel, table=True):
+    __tablename__ = "rag_template_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "rag_template_revision_id",
+            "capability_id",
+            name="uq_rag_template_capabilities_revision_capability",
+        ),
+        CheckConstraint(
+            "requirement_mode IN ('required', 'optional')",
+            name="ck_rag_template_capabilities_requirement_mode",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rag_template_revision_id: UUID = Field(
+        foreign_key="rag_template_revisions.id",
+        index=True,
+    )
+    capability_id: UUID = Field(foreign_key="capabilities.id", index=True)
+    requirement_mode: str = "required"
+    display_order: int = 0
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class RagTemplateDependency(SQLModel, table=True):
+    __tablename__ = "rag_template_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "rag_template_revision_id",
+            "source_capability_id",
+            "target_capability_id",
+            name="uq_rag_template_dependencies_edge",
+        ),
+        CheckConstraint(
+            "source_capability_id <> target_capability_id",
+            name="ck_rag_template_dependencies_distinct",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rag_template_revision_id: UUID = Field(
+        foreign_key="rag_template_revisions.id",
+        index=True,
+    )
+    source_capability_id: UUID = Field(foreign_key="capabilities.id")
+    target_capability_id: UUID = Field(foreign_key="capabilities.id")
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PipelineDefinition(SQLModel, table=True):
+    __tablename__ = "pipeline_definitions"
+    __table_args__ = (
+        UniqueConstraint("pipeline_key", name="uq_pipeline_definitions_key"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    pipeline_key: str = Field(index=True)
+    display_name: str
+    description: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class PipelineRevision(SQLModel, table=True):
+    __tablename__ = "pipeline_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_definition_id",
+            "revision_number",
+            name="uq_pipeline_revisions_number",
+        ),
+        CheckConstraint(
+            "revision_number > 0",
+            name="ck_pipeline_revisions_number_positive",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'retired')",
+            name="ck_pipeline_revisions_status",
+        ),
+        Index(
+            "uq_pipeline_revisions_single_active",
+            "pipeline_definition_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    pipeline_definition_id: UUID = Field(
+        foreign_key="pipeline_definitions.id",
+        index=True,
+    )
+    rag_template_revision_id: UUID | None = Field(
+        default=None,
+        foreign_key="rag_template_revisions.id",
+        index=True,
+    )
+    revision_number: int
+    status: str = "draft"
+    manifest_hash: str
+    change_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    activated_at: datetime | None = None
+    created_by_display_name: str | None = None
+
+
+class PipelineBinding(SQLModel, table=True):
+    __tablename__ = "pipeline_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_revision_id",
+            "binding_key",
+            name="uq_pipeline_bindings_revision_key",
+        ),
+        UniqueConstraint(
+            "pipeline_revision_id",
+            "position",
+            name="uq_pipeline_bindings_revision_position",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    pipeline_revision_id: UUID = Field(
+        foreign_key="pipeline_revisions.id",
+        index=True,
+    )
+    binding_key: str
+    component_version_id: UUID = Field(
+        foreign_key="component_versions.id",
+        index=True,
+    )
+    position: int
+    enabled: bool = True
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PipelineBindingCapability(SQLModel, table=True):
+    __tablename__ = "pipeline_binding_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_binding_id",
+            "component_capability_id",
+            name="uq_pipeline_binding_capabilities_binding_capability",
+        ),
+    )
+
+    pipeline_binding_id: UUID = Field(
+        foreign_key="pipeline_bindings.id",
+        primary_key=True,
+    )
+    component_capability_id: UUID = Field(
+        foreign_key="component_capabilities.id",
+        primary_key=True,
+    )
+    enabled: bool = True
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PipelineBindingDependency(SQLModel, table=True):
+    __tablename__ = "pipeline_binding_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_binding_id",
+            "depends_on_binding_id",
+            name="uq_pipeline_binding_dependencies_edge",
+        ),
+        CheckConstraint(
+            "pipeline_binding_id <> depends_on_binding_id",
+            name="ck_pipeline_binding_dependencies_distinct",
+        ),
+    )
+
+    pipeline_binding_id: UUID = Field(
+        foreign_key="pipeline_bindings.id",
+        primary_key=True,
+    )
+    depends_on_binding_id: UUID = Field(
+        foreign_key="pipeline_bindings.id",
+        primary_key=True,
+    )
+
+    created_at: datetime = Field(default_factory=utc_now)
