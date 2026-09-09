@@ -5,7 +5,17 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import field_validator
-from sqlalchemy import CheckConstraint, Column, Index, String, UniqueConstraint, Uuid, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, SQLModel
 
@@ -1129,6 +1139,60 @@ class EvaluationCampaign(SQLModel, table=True):
     completed_at: datetime | None = None
 
 
+class ArtifactType(SQLModel, table=True):
+    """A versioned, named input/output artifact in the descriptive graph."""
+
+    __tablename__ = "artifact_types"
+    __table_args__ = (
+        UniqueConstraint(
+            "artifact_type_key",
+            "version",
+            name="uq_artifact_types_key_version",
+        ),
+        CheckConstraint(
+            "btrim(artifact_type_key) != ''",
+            name="ck_artifact_types_key_nonempty",
+        ),
+        CheckConstraint(
+            "btrim(version) != ''",
+            name="ck_artifact_types_version_nonempty",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(schema_definition) = 'object'",
+            name="ck_artifact_types_schema_definition_object",
+        ),
+        Index("ix_artifact_types_key_active", "artifact_type_key", "is_active"),
+        Index("ix_artifact_types_storage_kind", "storage_kind"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    artifact_type_key: str
+    version: str = Field(
+        default="1",
+        sa_column=Column(String, nullable=False, server_default=text("'1'")),
+    )
+    display_name: str
+    description: str | None = None
+    storage_kind: str
+    storage_reference: str | None = None
+    schema_definition: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    is_active: bool = Field(
+        default=True,
+        sa_column=Column(nullable=False, server_default=text("true")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class Capability(SQLModel, table=True):
     """A stable function that can be provided by one or more components."""
 
@@ -1336,6 +1400,201 @@ class RagTemplateDependency(SQLModel, table=True):
     source_capability_id: UUID = Field(foreign_key="capabilities.id")
     target_capability_id: UUID = Field(foreign_key="capabilities.id")
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class CapabilityArtifactContract(SQLModel, table=True):
+    """A typed input or output port declared by a capability."""
+
+    __tablename__ = "capability_artifact_contracts"
+    __table_args__ = (
+        UniqueConstraint(
+            "capability_id",
+            "direction",
+            "port_key",
+            name="uq_capability_artifact_contracts_capability_direction_port",
+        ),
+        CheckConstraint(
+            "direction IN ('input', 'output')",
+            name="ck_capability_artifact_contracts_direction",
+        ),
+        CheckConstraint(
+            "position >= 0",
+            name="ck_capability_artifact_contracts_position_nonnegative",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(configuration) = 'object'",
+            name="ck_capability_artifact_contracts_configuration_object",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    capability_id: UUID = Field(foreign_key="capabilities.id", index=True)
+    artifact_type_id: UUID = Field(foreign_key="artifact_types.id", index=True)
+    direction: str
+    port_key: str
+    display_name: str | None = None
+    required: bool | None = None
+    cardinality: str | None = None
+    position: int = Field(
+        default=0,
+        sa_column=Column(nullable=False, server_default=text("0")),
+    )
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class RagTemplateNode(SQLModel, table=True):
+    """One occurrence of a capability in a template revision."""
+
+    __tablename__ = "rag_template_nodes"
+    __table_args__ = (
+        UniqueConstraint(
+            "rag_template_revision_id",
+            "node_key",
+            name="uq_rag_template_nodes_revision_key",
+        ),
+        UniqueConstraint(
+            "id",
+            "rag_template_revision_id",
+            name="uq_rag_template_nodes_id_revision",
+        ),
+        CheckConstraint(
+            "btrim(node_key) != ''",
+            name="ck_rag_template_nodes_key_nonempty",
+        ),
+        CheckConstraint(
+            "btrim(display_name) != ''",
+            name="ck_rag_template_nodes_display_name_nonempty",
+        ),
+        CheckConstraint(
+            "position >= 0",
+            name="ck_rag_template_nodes_position_nonnegative",
+        ),
+        CheckConstraint(
+            "requirement_mode IN ('required', 'optional')",
+            name="ck_rag_template_nodes_requirement_mode",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(configuration) = 'object'",
+            name="ck_rag_template_nodes_configuration_object",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rag_template_revision_id: UUID = Field(
+        foreign_key="rag_template_revisions.id",
+        index=True,
+    )
+    node_key: str
+    capability_id: UUID = Field(foreign_key="capabilities.id", index=True)
+    display_name: str
+    description: str | None = None
+    zone_key: str | None = None
+    requirement_mode: str
+    position: int = Field(
+        default=0,
+        sa_column=Column(nullable=False, server_default=text("0")),
+    )
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(nullable=False, server_default=text("true")),
+    )
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class RagTemplateEdge(SQLModel, table=True):
+    """A directed relation between nodes in one template revision."""
+
+    __tablename__ = "rag_template_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "rag_template_revision_id",
+            "edge_key",
+            name="uq_rag_template_edges_revision_key",
+        ),
+        CheckConstraint(
+            "source_node_id != target_node_id",
+            name="ck_rag_template_edges_distinct_nodes",
+        ),
+        CheckConstraint(
+            "btrim(edge_key) != ''",
+            name="ck_rag_template_edges_key_nonempty",
+        ),
+        CheckConstraint(
+            "btrim(edge_type) != ''",
+            name="ck_rag_template_edges_type_nonempty",
+        ),
+        CheckConstraint(
+            "priority >= 0",
+            name="ck_rag_template_edges_priority_nonnegative",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(configuration) = 'object'",
+            name="ck_rag_template_edges_configuration_object",
+        ),
+        CheckConstraint(
+            "condition IS NULL OR jsonb_typeof(condition) = 'object'",
+            name="ck_rag_template_edges_condition_object",
+        ),
+        ForeignKeyConstraint(
+            ["source_node_id", "rag_template_revision_id"],
+            ["rag_template_nodes.id", "rag_template_nodes.rag_template_revision_id"],
+            name="fk_rag_template_edges_source_node_revision",
+        ),
+        ForeignKeyConstraint(
+            ["target_node_id", "rag_template_revision_id"],
+            ["rag_template_nodes.id", "rag_template_nodes.rag_template_revision_id"],
+            name="fk_rag_template_edges_target_node_revision",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rag_template_revision_id: UUID = Field(
+        foreign_key="rag_template_revisions.id",
+        index=True,
+    )
+    source_node_id: UUID = Field(index=True)
+    target_node_id: UUID = Field(index=True)
+    edge_key: str
+    edge_type: str = Field(
+        default="normal",
+        sa_column=Column(String, nullable=False, server_default=text("'normal'")),
+    )
+    source_port_key: str | None = None
+    target_port_key: str | None = None
+    condition: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    priority: int = Field(
+        default=0,
+        sa_column=Column(nullable=False, server_default=text("0")),
+    )
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(nullable=False, server_default=text("true")),
+    )
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class PipelineDefinition(SQLModel, table=True):

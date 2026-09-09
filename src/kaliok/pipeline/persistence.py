@@ -7,6 +7,8 @@ existing dataclasses remain the runtime projection consumed by execution.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -17,7 +19,9 @@ from kaliok.hashing import canonical_json_hash
 from kaliok.pipeline.components import ComponentBinding, ComponentDefinition, ComponentRegistry
 from kaliok.pipeline.manifest import PipelineManifest
 from kaliok.storage.models import (
+    ArtifactType,
     Capability,
+    CapabilityArtifactContract,
     Component,
     ComponentCapability,
     ComponentVersion,
@@ -27,8 +31,10 @@ from kaliok.storage.models import (
     PipelineDefinition,
     PipelineRevision,
     RagTemplate,
+    RagTemplateEdge,
     RagTemplateCapability,
     RagTemplateDependency,
+    RagTemplateNode,
     RagTemplateRevision,
 )
 
@@ -91,6 +97,38 @@ COMPONENT_LABELS = {
     "postgres-normalized-index": "PostgreSQL Normalized Index",
 }
 
+EDGE_TYPES_KNOWN = frozenset(
+    {"normal", "optional", "conditional", "fallback", "parallel", "merge", "loop"}
+)
+ARTIFACT_STORAGE_KINDS_KNOWN = frozenset(
+    {"document", "relational_table", "index", "external", "transient", "composite"}
+)
+CARDINALITIES_KNOWN = frozenset({"one", "optional_one", "many", "one_or_many"})
+
+
+@dataclass(frozen=True)
+class GraphBackfillValidation:
+    """Read-only result for checking the legacy-to-graph projection."""
+
+    revision_id: UUID | None
+    legacy_capability_count: int
+    graph_node_count: int
+    legacy_dependency_count: int
+    graph_edge_count: int
+    contract_count: int
+    artifact_type_count: int
+    issues: tuple[str, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.issues
+
+
+def _filter_revision(rows: list[Any], revision_id: UUID | None) -> list[Any]:
+    if revision_id is None:
+        return rows
+    return [row for row in rows if row.rag_template_revision_id == revision_id]
+
 
 def _catalog_capability(session: Session, key: str) -> Capability:
     item = session.exec(select(Capability).where(Capability.capability_key == key)).first()
@@ -104,6 +142,209 @@ class PipelinePersistenceService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def load_artifact_types(self) -> list[ArtifactType]:
+        """Load the descriptive artifact catalogue without affecting runtime."""
+        return self.session.exec(
+            select(ArtifactType).order_by(ArtifactType.artifact_type_key, ArtifactType.version)
+        ).all()
+
+    def load_capability_artifact_contracts(
+        self,
+        capability_id: UUID | None = None,
+    ) -> list[CapabilityArtifactContract]:
+        statement = select(CapabilityArtifactContract).order_by(
+            CapabilityArtifactContract.capability_id,
+            CapabilityArtifactContract.direction,
+            CapabilityArtifactContract.position,
+            CapabilityArtifactContract.id,
+        )
+        if capability_id is not None:
+            statement = statement.where(CapabilityArtifactContract.capability_id == capability_id)
+        return self.session.exec(statement).all()
+
+    def load_template_nodes(self, revision_id: UUID | None = None) -> list[RagTemplateNode]:
+        statement = select(RagTemplateNode).order_by(
+            RagTemplateNode.rag_template_revision_id,
+            RagTemplateNode.position,
+            RagTemplateNode.node_key,
+        )
+        if revision_id is not None:
+            statement = statement.where(RagTemplateNode.rag_template_revision_id == revision_id)
+        return self.session.exec(statement).all()
+
+    def load_template_edges(self, revision_id: UUID | None = None) -> list[RagTemplateEdge]:
+        statement = select(RagTemplateEdge).order_by(
+            RagTemplateEdge.rag_template_revision_id,
+            RagTemplateEdge.priority,
+            RagTemplateEdge.edge_key,
+        )
+        if revision_id is not None:
+            statement = statement.where(RagTemplateEdge.rag_template_revision_id == revision_id)
+        return self.session.exec(statement).all()
+
+    def compare_legacy_vs_graph(self, revision_id: UUID | None = None) -> dict[str, Any]:
+        """Return deterministic differences between legacy rows and graph rows."""
+        legacy_capabilities = _filter_revision(
+            self.session.exec(select(RagTemplateCapability)).all(), revision_id
+        )
+        graph_nodes = self.load_template_nodes(revision_id)
+        legacy_dependencies = _filter_revision(
+            self.session.exec(select(RagTemplateDependency)).all(), revision_id
+        )
+        graph_edges = self.load_template_edges(revision_id)
+
+        legacy_node_keys = {
+            (row.rag_template_revision_id, row.capability_id)
+            for row in legacy_capabilities
+        }
+        graph_node_keys = {
+            (row.rag_template_revision_id, row.capability_id)
+            for row in graph_nodes
+        }
+        legacy_edge_keys = {
+            (
+                row.rag_template_revision_id,
+                row.source_capability_id,
+                row.target_capability_id,
+            )
+            for row in legacy_dependencies
+        }
+        capability_by_node_id = {row.id: row.capability_id for row in graph_nodes}
+        graph_edge_keys = {
+            (
+                row.rag_template_revision_id,
+                capability_by_node_id.get(row.source_node_id),
+                capability_by_node_id.get(row.target_node_id),
+            )
+            for row in graph_edges
+        }
+        return {
+            "revision_id": revision_id,
+            "legacy_capability_count": len(legacy_capabilities),
+            "graph_node_count": len(graph_nodes),
+            "legacy_dependency_count": len(legacy_dependencies),
+            "graph_edge_count": len(graph_edges),
+            "missing_nodes": sorted(legacy_node_keys - graph_node_keys, key=str),
+            "extra_nodes": sorted(graph_node_keys - legacy_node_keys, key=str),
+            "missing_edges": sorted(legacy_edge_keys - graph_edge_keys, key=str),
+            "extra_edges": sorted(graph_edge_keys - legacy_edge_keys, key=str),
+        }
+
+    def validate_graph_backfill(
+        self,
+        revision_id: UUID | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> GraphBackfillValidation:
+        """Validate the additive projection and optionally raise on anomalies."""
+        legacy_capabilities = _filter_revision(
+            self.session.exec(select(RagTemplateCapability)).all(), revision_id
+        )
+        graph_nodes = self.load_template_nodes(revision_id)
+        legacy_dependencies = _filter_revision(
+            self.session.exec(select(RagTemplateDependency)).all(), revision_id
+        )
+        graph_edges = self.load_template_edges(revision_id)
+        contracts = self.load_capability_artifact_contracts()
+        artifact_types = self.load_artifact_types()
+        capabilities = self.session.exec(select(Capability)).all()
+        capability_by_id = {row.id: row for row in capabilities}
+        artifact_by_id = {row.id: row for row in artifact_types}
+        issues: list[str] = []
+
+        node_counts = Counter((row.rag_template_revision_id, row.capability_id) for row in graph_nodes)
+        legacy_counts = Counter((row.rag_template_revision_id, row.capability_id) for row in legacy_capabilities)
+        for key, count in legacy_counts.items():
+            if node_counts[key] != count:
+                issues.append(f"legacy capability {key} maps to {node_counts[key]} graph nodes, expected {count}")
+        for key in node_counts:
+            if key not in legacy_counts:
+                issues.append(f"graph node has no legacy capability {key}")
+
+        node_by_revision_id = {(row.rag_template_revision_id, row.id): row for row in graph_nodes}
+        edge_keys = Counter((row.rag_template_revision_id, row.edge_key) for row in graph_edges)
+        if any(count > 1 for count in edge_keys.values()):
+            issues.append("duplicate edge_key")
+        node_keys = Counter((row.rag_template_revision_id, row.node_key) for row in graph_nodes)
+        if any(count > 1 for count in node_keys.values()):
+            issues.append("duplicate node_key")
+
+        dependency_projection = Counter(
+            (
+                row.rag_template_revision_id,
+                row.source_capability_id,
+                row.target_capability_id,
+            )
+            for row in legacy_dependencies
+        )
+        edge_projection = Counter()
+        for edge in graph_edges:
+            source = node_by_revision_id.get((edge.rag_template_revision_id, edge.source_node_id))
+            target = node_by_revision_id.get((edge.rag_template_revision_id, edge.target_node_id))
+            if source is None or target is None:
+                issues.append(f"edge {edge.edge_key} has a missing or cross-revision node")
+                continue
+            if source.rag_template_revision_id != target.rag_template_revision_id:
+                issues.append(f"edge {edge.edge_key} crosses template revisions")
+            edge_projection[(edge.rag_template_revision_id, source.capability_id, target.capability_id)] += 1
+        if dependency_projection != edge_projection:
+            issues.append("legacy dependencies and graph edges differ")
+
+        for node in graph_nodes:
+            if node.capability_id not in capability_by_id:
+                issues.append(f"node {node.node_key} references an unknown capability")
+        for contract in contracts:
+            if contract.capability_id not in capability_by_id:
+                issues.append(f"contract {contract.id} references an unknown capability")
+            if contract.artifact_type_id not in artifact_by_id:
+                issues.append(f"contract {contract.id} references an undefined artifact type")
+            elif contract.cardinality is not None and contract.cardinality not in CARDINALITIES_KNOWN:
+                # Extensible vocabulary: unknown values are reportable, not rejected.
+                pass
+        if any(
+            artifact.storage_kind not in ARTIFACT_STORAGE_KINDS_KNOWN
+            for artifact in artifact_types
+        ):
+            # Storage kinds intentionally remain extensible as varchar.
+            pass
+        if any(edge.edge_type not in EDGE_TYPES_KNOWN for edge in graph_edges):
+            # Edge types intentionally remain extensible as varchar.
+            pass
+
+        historical_contracts: Counter[tuple[UUID, str, str]] = Counter()
+        for capability in capabilities:
+            for direction, values in (
+                ("input", capability.input_artifact_types),
+                ("output", capability.output_artifact_types),
+            ):
+                if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                    issues.append(f"invalid historical artifact list for {capability.capability_key}.{direction}")
+                    continue
+                for value in values:
+                    if value.strip():
+                        historical_contracts[(capability.id, direction, value)] += 1
+        actual_contracts = Counter(
+            (row.capability_id, row.direction, artifact_by_id[row.artifact_type_id].artifact_type_key)
+            for row in contracts
+            if row.artifact_type_id in artifact_by_id
+        )
+        if historical_contracts != actual_contracts:
+            issues.append("historical artifact declarations and contracts differ")
+
+        report = GraphBackfillValidation(
+            revision_id=revision_id,
+            legacy_capability_count=len(legacy_capabilities),
+            graph_node_count=len(graph_nodes),
+            legacy_dependency_count=len(legacy_dependencies),
+            graph_edge_count=len(graph_edges),
+            contract_count=len(contracts),
+            artifact_type_count=len(artifact_types),
+            issues=tuple(dict.fromkeys(issues)),
+        )
+        if raise_on_error and not report.is_valid:
+            raise ValueError("Backfill RAG graph incohérent : " + "; ".join(report.issues))
+        return report
 
     def component_registry(self) -> ComponentRegistry:
         rows = self.session.exec(
@@ -565,6 +806,50 @@ def build_component_registry_from_db(session: Session) -> ComponentRegistry:
     return PipelinePersistenceService(session).component_registry()
 
 
+def load_artifact_types(session: Session) -> list[ArtifactType]:
+    return PipelinePersistenceService(session).load_artifact_types()
+
+
+def load_capability_artifact_contracts(
+    session: Session,
+    capability_id: UUID | None = None,
+) -> list[CapabilityArtifactContract]:
+    return PipelinePersistenceService(session).load_capability_artifact_contracts(capability_id)
+
+
+def load_template_nodes(
+    session: Session,
+    revision_id: UUID | None = None,
+) -> list[RagTemplateNode]:
+    return PipelinePersistenceService(session).load_template_nodes(revision_id)
+
+
+def load_template_edges(
+    session: Session,
+    revision_id: UUID | None = None,
+) -> list[RagTemplateEdge]:
+    return PipelinePersistenceService(session).load_template_edges(revision_id)
+
+
+def compare_legacy_vs_graph(
+    session: Session,
+    revision_id: UUID | None = None,
+) -> dict[str, Any]:
+    return PipelinePersistenceService(session).compare_legacy_vs_graph(revision_id)
+
+
+def validate_graph_backfill(
+    session: Session,
+    revision_id: UUID | None = None,
+    *,
+    raise_on_error: bool = False,
+) -> GraphBackfillValidation:
+    return PipelinePersistenceService(session).validate_graph_backfill(
+        revision_id,
+        raise_on_error=raise_on_error,
+    )
+
+
 def persist_manifest(
     session: Session,
     manifest: PipelineManifest,
@@ -749,9 +1034,19 @@ def bootstrap_catalog(session: Session) -> dict[str, Any]:
 
 
 __all__ = [
+    "ARTIFACT_STORAGE_KINDS_KNOWN",
+    "CARDINALITIES_KNOWN",
     "CAPABILITY_CATALOG",
+    "EDGE_TYPES_KNOWN",
+    "GraphBackfillValidation",
     "PipelinePersistenceService",
     "bootstrap_catalog",
     "build_component_registry_from_db",
+    "compare_legacy_vs_graph",
+    "load_artifact_types",
+    "load_capability_artifact_contracts",
+    "load_template_edges",
+    "load_template_nodes",
     "persist_manifest",
+    "validate_graph_backfill",
 ]
