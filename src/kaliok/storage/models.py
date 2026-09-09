@@ -21,6 +21,8 @@ from sqlmodel import Field, SQLModel
 
 from pgvector.sqlalchemy import Vector
 
+from kaliok.audit.sanitization import validate_configuration, validate_endpoint
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -1679,6 +1681,11 @@ class PipelineBinding(SQLModel, table=True):
         foreign_key="component_versions.id",
         index=True,
     )
+    resource_instance_id: UUID | None = Field(
+        default=None,
+        foreign_key="resource_instances.id",
+        index=True,
+    )
     position: int
     enabled: bool = True
     configuration: dict[str, Any] = Field(
@@ -1737,4 +1744,258 @@ class PipelineBindingDependency(SQLModel, table=True):
         primary_key=True,
     )
 
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class Connection(SQLModel, table=True):
+    """A reusable access channel shared by one or more resource instances."""
+
+    __tablename__ = "connections"
+    __table_args__ = (
+        UniqueConstraint("connection_key", name="uq_connections_key"),
+        CheckConstraint("btrim(connection_key) != ''", name="ck_connections_key_nonempty"),
+        CheckConstraint("btrim(display_name) != ''", name="ck_connections_display_name_nonempty"),
+        CheckConstraint("btrim(connection_kind) != ''", name="ck_connections_kind_nonempty"),
+        CheckConstraint("jsonb_typeof(configuration) = 'object'", name="ck_connections_configuration_object"),
+        CheckConstraint("jsonb_typeof(health_detail) = 'object'", name="ck_connections_health_detail_object"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_connections_metadata_object"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    connection_key: str = Field(index=True)
+    display_name: str
+    description: str | None = None
+    connection_kind: str
+    endpoint: str | None = None
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    health_status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    health_checked_at: datetime | None = None
+    health_detail: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("configuration")
+    @classmethod
+    def reject_configuration_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_configuration(value)
+
+    @field_validator("endpoint")
+    @classmethod
+    def reject_embedded_endpoint_credentials(cls, value: str | None) -> str | None:
+        return validate_endpoint(value)
+
+
+class CredentialReference(SQLModel, table=True):
+    """A non-secret pointer to a credential managed outside Kaliok."""
+
+    __tablename__ = "credential_references"
+    __table_args__ = (
+        UniqueConstraint("credential_key", name="uq_credential_references_key"),
+        CheckConstraint("btrim(credential_key) != ''", name="ck_credential_references_key_nonempty"),
+        CheckConstraint("btrim(display_name) != ''", name="ck_credential_references_display_name_nonempty"),
+        CheckConstraint("btrim(credential_type) != ''", name="ck_credential_references_type_nonempty"),
+        CheckConstraint("btrim(backend) != ''", name="ck_credential_references_backend_nonempty"),
+        CheckConstraint("btrim(secret_locator) != ''", name="ck_credential_references_locator_nonempty"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_credential_references_metadata_object"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    credential_key: str = Field(index=True)
+    display_name: str
+    credential_type: str
+    backend: str
+    secret_locator: str
+    status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ConnectionCredential(SQLModel, table=True):
+    __tablename__ = "connection_credentials"
+    __table_args__ = (
+        CheckConstraint("btrim(role_key) != ''", name="ck_connection_credentials_role_nonempty"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_connection_credentials_metadata_object"),
+    )
+
+    connection_id: UUID = Field(foreign_key="connections.id", primary_key=True)
+    credential_reference_id: UUID = Field(foreign_key="credential_references.id", primary_key=True)
+    role_key: str = Field(default="default", sa_column=Column(String, primary_key=True, nullable=False, server_default=text("'default'")))
+    required: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    enabled: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ResourceInstance(SQLModel, table=True):
+    """A configured, concrete instance of a component version."""
+
+    __tablename__ = "resource_instances"
+    __table_args__ = (
+        UniqueConstraint("instance_key", name="uq_resource_instances_key"),
+        CheckConstraint("btrim(instance_key) != ''", name="ck_resource_instances_key_nonempty"),
+        CheckConstraint("btrim(display_name) != ''", name="ck_resource_instances_display_name_nonempty"),
+        CheckConstraint("btrim(runtime_kind) != ''", name="ck_resource_instances_runtime_kind_nonempty"),
+        CheckConstraint("jsonb_typeof(configuration) = 'object'", name="ck_resource_instances_configuration_object"),
+        CheckConstraint("jsonb_typeof(health_detail) = 'object'", name="ck_resource_instances_health_detail_object"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_resource_instances_metadata_object"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    component_version_id: UUID = Field(foreign_key="component_versions.id", index=True)
+    instance_key: str = Field(index=True)
+    display_name: str
+    description: str | None = None
+    runtime_kind: str
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    health_status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    health_checked_at: datetime | None = None
+    health_detail: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("configuration")
+    @classmethod
+    def reject_configuration_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_configuration(value)
+
+
+class ResourceInstanceConnection(SQLModel, table=True):
+    __tablename__ = "resource_instance_connections"
+    __table_args__ = (
+        CheckConstraint("btrim(role_key) != ''", name="ck_resource_instance_connections_role_nonempty"),
+        CheckConstraint("jsonb_typeof(configuration) = 'object'", name="ck_resource_instance_connections_configuration_object"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_resource_instance_connections_metadata_object"),
+        Index("ix_resource_instance_connections_connection_id", "connection_id"),
+    )
+
+    resource_instance_id: UUID = Field(foreign_key="resource_instances.id", primary_key=True)
+    connection_id: UUID = Field(foreign_key="connections.id", primary_key=True)
+    role_key: str = Field(default="default", sa_column=Column(String, primary_key=True, nullable=False, server_default=text("'default'")))
+    required: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    enabled: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ResourceInstanceCredential(SQLModel, table=True):
+    __tablename__ = "resource_instance_credentials"
+    __table_args__ = (
+        CheckConstraint("btrim(role_key) != ''", name="ck_resource_instance_credentials_role_nonempty"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_resource_instance_credentials_metadata_object"),
+        Index("ix_resource_instance_credentials_credential_id", "credential_reference_id"),
+    )
+
+    resource_instance_id: UUID = Field(foreign_key="resource_instances.id", primary_key=True)
+    credential_reference_id: UUID = Field(foreign_key="credential_references.id", primary_key=True)
+    role_key: str = Field(default="default", sa_column=Column(String, primary_key=True, nullable=False, server_default=text("'default'")))
+    required: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    enabled: bool = Field(default=True, sa_column=Column(nullable=False, server_default=text("true")))
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ResourceInstanceCapability(SQLModel, table=True):
+    __tablename__ = "resource_instance_capabilities"
+    __table_args__ = (
+        CheckConstraint("jsonb_typeof(configuration) = 'object'", name="ck_resource_instance_capabilities_configuration_object"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_resource_instance_capabilities_metadata_object"),
+        Index("ix_resource_instance_capabilities_component_capability_id", "component_capability_id"),
+    )
+
+    resource_instance_id: UUID = Field(foreign_key="resource_instances.id", primary_key=True)
+    component_capability_id: UUID = Field(foreign_key="component_capabilities.id", primary_key=True)
+    availability_status: str = Field(default="unknown", sa_column=Column(String, nullable=False, server_default=text("'unknown'")))
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditEvent(SQLModel, table=True):
+    """Durable business audit history; intentionally has no user FK."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("btrim(actor_type) != ''", name="ck_audit_events_actor_type_nonempty"),
+        CheckConstraint("btrim(action) != ''", name="ck_audit_events_action_nonempty"),
+        CheckConstraint("btrim(object_type) != ''", name="ck_audit_events_object_type_nonempty"),
+        CheckConstraint("before_state IS NULL OR jsonb_typeof(before_state) = 'object'", name="ck_audit_events_before_state_object"),
+        CheckConstraint("after_state IS NULL OR jsonb_typeof(after_state) = 'object'", name="ck_audit_events_after_state_object"),
+        CheckConstraint("changed_fields IS NULL OR jsonb_typeof(changed_fields) = 'object'", name="ck_audit_events_changed_fields_object"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_audit_events_metadata_object"),
+        Index("ix_audit_events_occurred_at", "occurred_at"),
+        Index("ix_audit_events_object", "object_type", "object_id"),
+        Index("ix_audit_events_request_id", "request_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    occurred_at: datetime = Field(default_factory=utc_now)
+    actor_type: str
+    actor_user_id: UUID | None = None
+    actor_key: str | None = None
+    actor_display_name_snapshot: str | None = None
+    actor_identifier_snapshot: str | None = None
+    action: str
+    object_type: str
+    object_id: UUID | None = None
+    object_key: str | None = None
+    object_revision_id: UUID | None = None
+    before_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True))
+    after_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True))
+    changed_fields: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True))
+    reason: str | None = None
+    request_id: UUID | None = None
+    execution_group_id: UUID | None = None
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
     created_at: datetime = Field(default_factory=utc_now)
