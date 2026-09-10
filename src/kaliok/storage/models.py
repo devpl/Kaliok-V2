@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    PrimaryKeyConstraint,
     String,
     UniqueConstraint,
     Uuid,
@@ -1621,6 +1622,11 @@ class PipelineRevision(SQLModel, table=True):
             "revision_number",
             name="uq_pipeline_revisions_number",
         ),
+        UniqueConstraint(
+            "id",
+            "rag_template_revision_id",
+            name="uq_pipeline_revisions_id_template_revision",
+        ),
         CheckConstraint(
             "revision_number > 0",
             name="ck_pipeline_revisions_number_positive",
@@ -1669,6 +1675,16 @@ class PipelineBinding(SQLModel, table=True):
             "position",
             name="uq_pipeline_bindings_revision_position",
         ),
+        UniqueConstraint(
+            "id",
+            "pipeline_revision_id",
+            name="uq_pipeline_bindings_id_revision",
+        ),
+        ForeignKeyConstraint(
+            ["resource_instance_id", "component_version_id"],
+            ["resource_instances.id", "resource_instances.component_version_id"],
+            name="fk_pipeline_bindings_resource_instance_component_version",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -1693,6 +1709,104 @@ class PipelineBinding(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=False),
     )
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class PipelineBindingNode(SQLModel, table=True):
+    """Descriptive assignment of a pipeline binding to a template node."""
+
+    __tablename__ = "pipeline_binding_nodes"
+    __table_args__ = (
+        CheckConstraint(
+            "priority >= 0",
+            name="ck_pipeline_binding_nodes_priority_nonnegative",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(configuration) = 'object'",
+            name="ck_pipeline_binding_nodes_configuration_object",
+        ),
+        CheckConstraint(
+            "NOT is_selected OR enabled",
+            name="ck_pipeline_binding_nodes_selected_enabled",
+        ),
+        ForeignKeyConstraint(
+            ["pipeline_binding_id", "pipeline_revision_id"],
+            ["pipeline_bindings.id", "pipeline_bindings.pipeline_revision_id"],
+            name="fk_pipeline_binding_nodes_binding_revision",
+        ),
+        ForeignKeyConstraint(
+            ["rag_template_node_id", "rag_template_revision_id"],
+            ["rag_template_nodes.id", "rag_template_nodes.rag_template_revision_id"],
+            name="fk_pipeline_binding_nodes_node_template_revision",
+        ),
+        ForeignKeyConstraint(
+            ["pipeline_revision_id", "rag_template_revision_id"],
+            ["pipeline_revisions.id", "pipeline_revisions.rag_template_revision_id"],
+            name="fk_pipeline_binding_nodes_pipeline_template_revision",
+        ),
+        Index(
+            "ix_pipeline_binding_nodes_binding_revision",
+            "pipeline_binding_id",
+            "pipeline_revision_id",
+        ),
+        Index(
+            "ix_pipeline_binding_nodes_node_template_revision",
+            "rag_template_node_id",
+            "rag_template_revision_id",
+        ),
+        Index(
+            "ix_pipeline_binding_nodes_revision_node",
+            "pipeline_revision_id",
+            "rag_template_node_id",
+        ),
+        Index(
+            "uq_pipeline_binding_nodes_selected_node",
+            "pipeline_revision_id",
+            "rag_template_node_id",
+            unique=True,
+            postgresql_where=text("is_selected IS TRUE"),
+        ),
+        # The pair is the business identity and is intentionally independent
+        # of capability_id: a node derives its capability from the template.
+        PrimaryKeyConstraint(
+            "pipeline_binding_id",
+            "rag_template_node_id",
+            name="pk_pipeline_binding_nodes",
+        ),
+    )
+
+    pipeline_binding_id: UUID = Field(primary_key=True)
+    rag_template_node_id: UUID = Field(primary_key=True)
+    pipeline_revision_id: UUID
+    rag_template_revision_id: UUID
+    enabled: bool = Field(
+        default=True,
+        sa_column=Column(nullable=False, server_default=text("true")),
+    )
+    is_selected: bool = Field(
+        default=False,
+        sa_column=Column(nullable=False, server_default=text("false")),
+    )
+    priority: int = Field(
+        default=0,
+        sa_column=Column(nullable=False, server_default=text("0")),
+    )
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+    @field_validator("configuration")
+    @classmethod
+    def reject_configuration_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_configuration(value)
 
 
 class PipelineBindingCapability(SQLModel, table=True):
@@ -1851,6 +1965,11 @@ class ResourceInstance(SQLModel, table=True):
     __tablename__ = "resource_instances"
     __table_args__ = (
         UniqueConstraint("instance_key", name="uq_resource_instances_key"),
+        UniqueConstraint(
+            "id",
+            "component_version_id",
+            name="uq_resource_instances_id_component_version",
+        ),
         CheckConstraint("btrim(instance_key) != ''", name="ck_resource_instances_key_nonempty"),
         CheckConstraint("btrim(display_name) != ''", name="ck_resource_instances_display_name_nonempty"),
         CheckConstraint("btrim(runtime_kind) != ''", name="ck_resource_instances_runtime_kind_nonempty"),

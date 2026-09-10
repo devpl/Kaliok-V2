@@ -16,6 +16,10 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from kaliok.hashing import canonical_json_hash
+from kaliok.pipeline.composition import (
+    CompositionValidationResult,
+    PipelineCompositionService,
+)
 from kaliok.pipeline.components import ComponentBinding, ComponentDefinition, ComponentRegistry
 from kaliok.pipeline.manifest import PipelineManifest
 from kaliok.storage.models import (
@@ -28,6 +32,7 @@ from kaliok.storage.models import (
     PipelineBinding,
     PipelineBindingCapability,
     PipelineBindingDependency,
+    PipelineBindingNode,
     PipelineDefinition,
     PipelineRevision,
     RagTemplate,
@@ -142,6 +147,24 @@ class PipelinePersistenceService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def composition_service(self) -> PipelineCompositionService:
+        """Return the additive composition service without changing runtime reads."""
+        return PipelineCompositionService(self.session)
+
+    def load_binding_nodes(self, revision_id: UUID | None = None) -> list[PipelineBindingNode]:
+        return self.composition_service().load_binding_nodes(revision_id)
+
+    def validate_pipeline_composition(
+        self,
+        revision_id: UUID,
+        *,
+        raise_on_error: bool = False,
+    ) -> CompositionValidationResult:
+        return self.composition_service().validate_pipeline_composition(
+            revision_id,
+            raise_on_error=raise_on_error,
+        )
 
     def load_artifact_types(self) -> list[ArtifactType]:
         """Load the descriptive artifact catalogue without affecting runtime."""
@@ -636,6 +659,13 @@ class PipelinePersistenceService:
             # a binding while a dependency row still references it.
             old_binding_ids = [old.id for old in old_bindings]
             if old_binding_ids:
+                for link in self.session.exec(
+                    select(PipelineBindingNode).where(
+                        PipelineBindingNode.pipeline_binding_id.in_(old_binding_ids)
+                    )
+                ).all():
+                    self.session.delete(link)
+                self.session.flush()
                 for dependency in self.session.exec(
                     select(PipelineBindingDependency).where(
                         (PipelineBindingDependency.pipeline_binding_id.in_(old_binding_ids))
@@ -850,6 +880,25 @@ def validate_graph_backfill(
     )
 
 
+def load_pipeline_binding_nodes(
+    session: Session,
+    revision_id: UUID | None = None,
+) -> list[PipelineBindingNode]:
+    return PipelineCompositionService(session).load_binding_nodes(revision_id)
+
+
+def validate_pipeline_composition(
+    session: Session,
+    revision_id: UUID,
+    *,
+    raise_on_error: bool = False,
+) -> CompositionValidationResult:
+    return PipelineCompositionService(session).validate_pipeline_composition(
+        revision_id,
+        raise_on_error=raise_on_error,
+    )
+
+
 def persist_manifest(
     session: Session,
     manifest: PipelineManifest,
@@ -1047,6 +1096,8 @@ __all__ = [
     "load_capability_artifact_contracts",
     "load_template_edges",
     "load_template_nodes",
+    "load_pipeline_binding_nodes",
     "persist_manifest",
+    "validate_pipeline_composition",
     "validate_graph_backfill",
 ]
