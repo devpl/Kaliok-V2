@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kaliok — Composer</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'core_ui/rag_prototype.css' %}">
+</head>
+<body class="prototype-app">
+<div class="app-shell" data-prototype-app>
+    <aside class="sidebar" aria-label="Navigation principale">
+        <div class="sidebar-brand"><div class="brand-mark">K</div><div><strong>KALIOK</strong><span>RAG workspace</span></div></div>
+        <nav class="sidebar-nav">
+            <a href="#/composer" data-nav="composer" class="nav-link nav-link-primary"><span class="nav-icon">⌂</span> Vue d’ensemble</a>
+            <p class="nav-section-label">Composition</p>
+            <a href="#/composer/model" data-nav="model" class="nav-link"><span class="nav-icon">◇</span> Modèle RAG</a>
+            <a href="#/composer/preparation" data-nav="preparation" class="nav-link"><span class="nav-icon">◌</span> Préparation</a>
+            <a href="#/composer/search" data-nav="search" class="nav-link"><span class="nav-icon">⌕</span> Recherche</a>
+            <a href="#/composer/response" data-nav="response" class="nav-link"><span class="nav-icon">↗</span> Réponse</a>
+            <p class="nav-section-label">Pipelines persistés</p>
+            <div data-pipeline-navigation></div>
+            <button class="nav-link nav-link-button" type="button" disabled title="Création prévue dans une phase ultérieure"><span class="nav-icon">＋</span> Nouveau pipeline</button>
+            <p class="nav-section-label">Fonctions futures</p>
+            <span class="nav-link disabled"><span class="nav-icon">▷</span> Exécutions / Tests</span>
+            <span class="nav-link disabled"><span class="nav-icon">✓</span> Promotion</span>
+        </nav>
+        <div class="sidebar-footer"><span class="live-dot"></span> Données PostgreSQL <span class="version">lecture seule</span></div>
+    </aside>
+    <div class="workspace">
+        <header class="topbar">
+            <div class="topbar-left"><span class="topbar-context">Workspace</span><span class="topbar-divider">/</span><span data-topbar-page>Composer</span></div>
+            <div class="topbar-right">
+                <span class="prototype-label">Lecture seule</span>
+                <div class="active-pipeline"><span>Pipeline</span><strong data-active-pipeline>—</strong><button type="button" class="pipeline-chevron" data-action="toggle-pipeline-menu" aria-label="Changer de pipeline">⌄</button></div>
+                <div class="pipeline-menu" data-pipeline-menu hidden></div>
+                <button type="button" class="avatar" aria-label="Compte">AD</button>
+            </div>
+        </header>
+        <main class="main-content" id="main-content">
+            {% if composer_error %}<div class="load-error" role="alert">{{ composer_error }}</div>{% endif %}
+            <div class="breadcrumb" data-breadcrumb></div>
+            <div data-view></div>
+        </main>
+    </div>
+</div>
+{{ composer_data|json_script:"composer-data" }}
+<script src="{% static 'core_ui/rag_prototype.js' %}"></script>
+</body>
+</html>

@@ -8,10 +8,12 @@ from .views import (
     rag_laboratory_pipeline,
     upload_document,
 )
+from .rag_prototype import rag_prototype
 
 
 urlpatterns = [
     path("", home, name="home"),
+    path("rag/prototype/", rag_prototype, name="rag_prototype"),
     path("rag/laboratory/", rag_laboratory, name="rag_laboratory"),
     path("rag/laboratory/data/", rag_laboratory_data, name="rag_laboratory_data"),
     path("rag/laboratory/pipeline/", rag_laboratory_pipeline, name="rag_laboratory_pipeline"),
