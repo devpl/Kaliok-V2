@@ -21,6 +21,10 @@ class ExecutionContext:
     environment: ExecutionEnvironment
     configuration_revision_id: UUID | None = None
     pipeline_revision_id: UUID | None = None
+    # ProcessingRun still uses its historical production/experiment vocabulary.
+    # A Composer Lab execution deliberately maps to ``experiment`` there while
+    # its authoritative scope remains ``Execution.scope == 'lab'``.
+    execution_step_id: UUID | None = None
     execution_group_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:
@@ -58,6 +62,7 @@ def apply_execution_context(
     run.configuration_revision_id = context.configuration_revision_id
     run.pipeline_revision_id = context.pipeline_revision_id
     run.execution_group_id = context.execution_group_id
+    run.execution_step_id = context.execution_step_id
     run.configuration_hash = canonical_json_hash(run.configuration)
 
 

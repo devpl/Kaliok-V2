@@ -6,7 +6,8 @@
   const payloadElement = document.getElementById("composer-data");
   const payload = payloadElement ? JSON.parse(payloadElement.textContent) : { pipelines: [] };
   const pipelines = Array.isArray(payload.pipelines) ? payload.pipelines : [];
-  const state = { pipeline: null, revision: null };
+  const state = { pipeline: null, revision: null, stepResults: {} };
+  const apiBase = root.dataset.composerApiBase || "";
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
@@ -44,7 +45,10 @@
   function nodeCard(node) {
     const selected = node.selected_binding;
     const stateText = !node.enabled ? "Node désactivé" : selected ? "Configuré" : "Non configuré";
-    return `<article class="function-card ${selected ? "filled" : "empty"} ${!node.enabled ? "node-disabled" : ""}" data-node-id="${esc(node.id)}"><div class="function-top"><div><h3>${esc(node.display_name)}</h3><span class="function-kind">${esc(node.capability.display_name)} · ${node.requirement_mode === "optional" ? "Optionnel" : "Requis"}</span></div>${badge(stateText, !node.enabled || !selected ? "warn" : "good")}</div>${selected ? assignmentCard(selected, true) : `<div class="missing-binding">Aucun binding sélectionné pour cette fonction.</div>`}${node.alternatives.length ? `<div class="alternatives"><h4>Alternatives</h4>${node.alternatives.map((item) => assignmentCard(item)).join("")}</div>` : ""}${node.issues.length ? `<ul class="issue-list">${node.issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}<div class="card-actions"><button type="button" class="button" disabled title="Le runtime sera raccordé dans la prochaine phase">Tester cette étape · bientôt disponible</button></div><details class="tech-details"><summary>Contrats et identifiants</summary><div class="tech-content"><span><strong>Consomme</strong><br>${esc(contractLabels(node.capability.input_contracts))}</span><span><strong>Produit</strong><br>${esc(contractLabels(node.capability.output_contracts))}</span><span><strong>Node</strong><br>${esc(node.key)}</span><span><strong>Capability</strong><br>${esc(node.capability.key || "Inconnue")}</span></div></details></article>`;
+    const canTest = Boolean(node.enabled && selected && selected.enabled && selected.binding.enabled);
+    const result = state.stepResults[node.id];
+    const resultHtml = result ? `<div class="missing-binding"><strong>${esc(result.status)}</strong><br>${esc(result.message || "")}</div>` : "";
+    return `<article class="function-card ${selected ? "filled" : "empty"} ${!node.enabled ? "node-disabled" : ""}" data-node-id="${esc(node.id)}"><div class="function-top"><div><h3>${esc(node.display_name)}</h3><span class="function-kind">${esc(node.capability.display_name)} · ${node.requirement_mode === "optional" ? "Optionnel" : "Requis"}</span></div>${badge(stateText, !node.enabled || !selected ? "warn" : "good")}</div>${selected ? assignmentCard(selected, true) : `<div class="missing-binding">Aucun binding sélectionné pour cette fonction.</div>`}${node.alternatives.length ? `<div class="alternatives"><h4>Alternatives</h4>${node.alternatives.map((item) => assignmentCard(item)).join("")}</div>` : ""}${node.issues.length ? `<ul class="issue-list">${node.issues.map((issue) => `<li>${esc(issue)}</li>`).join("")}</ul>` : ""}<div class="card-actions"><button type="button" class="button" data-test-node="${esc(node.id)}" ${canTest ? "" : "disabled"} title="Exécute uniquement ce node">Tester cette étape</button></div>${resultHtml}<details class="tech-details"><summary>Contrats et identifiants</summary><div class="tech-content"><span><strong>Consomme</strong><br>${esc(contractLabels(node.capability.input_contracts))}</span><span><strong>Produit</strong><br>${esc(contractLabels(node.capability.output_contracts))}</span><span><strong>Node</strong><br>${esc(node.key)}</span><span><strong>Capability</strong><br>${esc(node.capability.key || "Inconnue")}</span></div></details></article>`;
   }
   function phaseView(node) {
     const phase = node.zone_key || node.capability.phase_key || "";
@@ -92,6 +96,17 @@
   }
   root.addEventListener("click", (event) => {
     if (event.target.closest("[data-action]")?.dataset.action === "toggle-pipeline-menu") { const menu = document.querySelector("[data-pipeline-menu]"); menu.hidden = !menu.hidden; }
+    const button = event.target.closest("[data-test-node]");
+    if (!button || !state.revision) return;
+    const node = state.revision.nodes.find((item) => item.id === button.dataset.testNode);
+    const raw = window.prompt("Entrées (une par ligne : type_artefact:uuid). Laissez vide pour vérifier les prérequis.", "");
+    if (raw === null) return;
+    const inputs = raw.split(/\n/).filter(Boolean).map((line) => { const [artifact_type_key, artifact_id] = line.trim().split(":"); return { artifact_type_key, artifact_id }; });
+    button.disabled = true;
+    fetch(`${apiBase}/rag/composer/execute-step`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pipeline_revision_id: state.revision.id, rag_template_node_id: node.id, inputs }) })
+      .then((response) => response.json())
+      .then((data) => { state.stepResults[node.id] = { status: data.status || "failed", message: data.error || data.unsupported_reason || (data.missing_inputs?.length ? `Entrée requise manquante : ${data.missing_inputs.map((item) => item.artifact_type_key).join(", ")}` : `Execution ${data.execution_id || ""}`) }; render(); })
+      .catch(() => { state.stepResults[node.id] = { status: "failed", message: "Le service d'exécution est indisponible." }; render(); });
   });
   root.addEventListener("change", (event) => {
     if (!event.target.matches("[data-revision-select]")) return;

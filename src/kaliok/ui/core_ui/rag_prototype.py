@@ -25,5 +25,6 @@ def rag_prototype(request):
     return render(
         request,
         "core_ui/rag_prototype.html",
-        {"composer_data": composer_data, "composer_error": composer_error},
+        {"composer_data": composer_data, "composer_error": composer_error,
+         "composer_api_base_url": settings.KALIOK_API_BASE_URL.rstrip("/")},
     )
