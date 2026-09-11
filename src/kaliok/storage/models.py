@@ -530,6 +530,13 @@ class ProcessingRun(SQLModel, table=True):
         ),
     )
 
+    # Migration 3 owns the FK because ExecutionStep is declared later in this
+    # module and legacy partial test schemas intentionally remain constructible.
+    execution_step_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(Uuid(), nullable=True, index=True),
+    )
+
     execution_group_id: UUID | None = Field(default=None, index=True)
 
     configuration_hash: str | None = None
@@ -1720,6 +1727,13 @@ class PipelineBindingNode(SQLModel, table=True):
             "priority >= 0",
             name="ck_pipeline_binding_nodes_priority_nonnegative",
         ),
+        UniqueConstraint(
+            "pipeline_binding_id",
+            "pipeline_revision_id",
+            "rag_template_node_id",
+            "rag_template_revision_id",
+            name="uq_pipeline_binding_nodes_execution_reference",
+        ),
         CheckConstraint(
             "jsonb_typeof(configuration) = 'object'",
             name="ck_pipeline_binding_nodes_configuration_object",
@@ -2118,3 +2132,157 @@ class AuditEvent(SQLModel, table=True):
         sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class Execution(SQLModel, table=True):
+    """Durable orchestration of a graph-shaped pipeline invocation."""
+
+    __tablename__ = "executions"
+    __table_args__ = (
+        CheckConstraint("scope IN ('production', 'lab', 'evaluation')", name="ck_executions_scope"),
+        CheckConstraint("execution_mode IN ('step', 'prerequisites', 'zone', 'pipeline')", name="ck_executions_mode"),
+        CheckConstraint("status IN ('pending', 'running', 'completed', 'failed', 'cancelled')", name="ck_executions_status"),
+        CheckConstraint("btrim(actor_type) != ''", name="ck_executions_actor_type_nonempty"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_executions_metadata_object"),
+        ForeignKeyConstraint(
+            ["pipeline_revision_id", "rag_template_revision_id"],
+            ["pipeline_revisions.id", "pipeline_revisions.rag_template_revision_id"],
+            name="fk_executions_pipeline_template_revision",
+        ),
+        ForeignKeyConstraint(
+            ["requested_rag_template_node_id", "rag_template_revision_id"],
+            ["rag_template_nodes.id", "rag_template_nodes.rag_template_revision_id"],
+            name="fk_executions_requested_node_template_revision",
+        ),
+        UniqueConstraint(
+            "id", "pipeline_revision_id", "rag_template_revision_id",
+            name="uq_executions_id_pipeline_template_revision",
+        ),
+        Index("ix_executions_scope", "scope"),
+        Index("ix_executions_status", "status"),
+        Index("ix_executions_pipeline_revision_id", "pipeline_revision_id"),
+        Index("ix_executions_rag_template_revision_id", "rag_template_revision_id"),
+        Index("ix_executions_created_at", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    scope: str
+    execution_mode: str
+    status: str = "pending"
+    actor_type: str
+    actor_user_id: UUID | None = None
+    configuration_revision_id: UUID | None = Field(default=None, foreign_key="configuration_profile_revisions.id")
+    pipeline_revision_id: UUID
+    rag_template_revision_id: UUID
+    requested_rag_template_node_id: UUID | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    error_message: str | None = None
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+
+
+class ExecutionStep(SQLModel, table=True):
+    """One real launch of a RagTemplateNode within an Execution."""
+
+    __tablename__ = "execution_steps"
+    __table_args__ = (
+        CheckConstraint("sequence_no >= 0", name="ck_execution_steps_sequence_nonnegative"),
+        CheckConstraint("status IN ('pending', 'running', 'completed', 'failed', 'skipped', 'cancelled')", name="ck_execution_steps_status"),
+        CheckConstraint("jsonb_typeof(configuration) = 'object'", name="ck_execution_steps_configuration_object"),
+        UniqueConstraint("execution_id", "sequence_no", name="uq_execution_steps_execution_sequence"),
+        ForeignKeyConstraint(
+            ["execution_id", "pipeline_revision_id", "rag_template_revision_id"],
+            ["executions.id", "executions.pipeline_revision_id", "executions.rag_template_revision_id"],
+            name="fk_execution_steps_execution_revisions",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["rag_template_node_id", "rag_template_revision_id"],
+            ["rag_template_nodes.id", "rag_template_nodes.rag_template_revision_id"],
+            name="fk_execution_steps_node_template_revision",
+        ),
+        ForeignKeyConstraint(
+            ["pipeline_binding_id", "pipeline_revision_id", "rag_template_node_id", "rag_template_revision_id"],
+            ["pipeline_binding_nodes.pipeline_binding_id", "pipeline_binding_nodes.pipeline_revision_id", "pipeline_binding_nodes.rag_template_node_id", "pipeline_binding_nodes.rag_template_revision_id"],
+            name="fk_execution_steps_binding_node",
+        ),
+        Index("ix_execution_steps_execution_id", "execution_id"),
+        Index("ix_execution_steps_rag_template_node_id", "rag_template_node_id"),
+        Index("ix_execution_steps_pipeline_binding_id", "pipeline_binding_id"),
+        Index("ix_execution_steps_status", "status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    execution_id: UUID
+    sequence_no: int
+    pipeline_revision_id: UUID
+    rag_template_revision_id: UUID
+    rag_template_node_id: UUID
+    pipeline_binding_id: UUID | None = None
+    resource_instance_id: UUID | None = Field(default=None, foreign_key="resource_instances.id")
+    status: str = "pending"
+    configuration: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    error_message: str | None = None
+
+
+class ExecutionArtifact(SQLModel, table=True):
+    """Typed input/output envelope; the concrete target lives in one link table."""
+
+    __tablename__ = "execution_artifacts"
+    __table_args__ = (
+        CheckConstraint("role IN ('input', 'output')", name="ck_execution_artifacts_role"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="ck_execution_artifacts_metadata_object"),
+        Index("ix_execution_artifacts_execution_step_id", "execution_step_id"),
+        Index("ix_execution_artifacts_role", "role"),
+        Index("ix_execution_artifacts_artifact_type_id", "artifact_type_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    execution_step_id: UUID = Field(foreign_key="execution_steps.id", ondelete="CASCADE")
+    role: str
+    artifact_type_id: UUID = Field(foreign_key="artifact_types.id")
+    created_at: datetime = Field(default_factory=utc_now)
+    extra_data: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    )
+
+
+class ExecutionArtifactContentBlock(SQLModel, table=True):
+    __tablename__ = "execution_artifact_content_blocks"
+    __table_args__ = (Index("ix_execution_artifact_content_block_target", "content_block_id"),)
+    execution_artifact_id: UUID = Field(foreign_key="execution_artifacts.id", primary_key=True, ondelete="CASCADE")
+    content_block_id: UUID = Field(foreign_key="content_blocks.id")
+
+
+class ExecutionArtifactNormalizedContentUnit(SQLModel, table=True):
+    __tablename__ = "execution_artifact_normalized_content_units"
+    __table_args__ = (Index("ix_execution_artifact_normalized_unit_target", "normalized_content_unit_id"),)
+    execution_artifact_id: UUID = Field(foreign_key="execution_artifacts.id", primary_key=True, ondelete="CASCADE")
+    normalized_content_unit_id: UUID = Field(foreign_key="normalized_content_units.id")
+
+
+class ExecutionArtifactDiscoveredCandidate(SQLModel, table=True):
+    __tablename__ = "execution_artifact_discovered_candidates"
+    __table_args__ = (Index("ix_execution_artifact_candidate_target", "discovered_candidate_id"),)
+    execution_artifact_id: UUID = Field(foreign_key="execution_artifacts.id", primary_key=True, ondelete="CASCADE")
+    discovered_candidate_id: UUID = Field(foreign_key="discovered_candidates.id")
+
+
+class ExecutionArtifactEntity(SQLModel, table=True):
+    __tablename__ = "execution_artifact_entities"
+    __table_args__ = (Index("ix_execution_artifact_entity_target", "entity_id"),)
+    execution_artifact_id: UUID = Field(foreign_key="execution_artifacts.id", primary_key=True, ondelete="CASCADE")
+    entity_id: UUID = Field(foreign_key="entities.id")

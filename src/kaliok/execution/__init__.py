@@ -61,7 +61,18 @@ def apply_execution_context(
     run.configuration_hash = canonical_json_hash(run.configuration)
 
 
+from kaliok.execution.service import (
+    ArtifactRole,
+    ExecutionMode,
+    ExecutionProvenanceService,
+    ExecutionScope,
+)
+
 __all__ = [
+    "ArtifactRole",
+    "ExecutionMode",
+    "ExecutionProvenanceService",
+    "ExecutionScope",
     "ExecutionContext",
     "ExecutionEnvironment",
     "apply_execution_context",
