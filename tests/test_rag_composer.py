@@ -357,3 +357,46 @@ def test_django_composer_handles_unavailable_api(monkeypatch):
     response = Client(HTTP_HOST="localhost").get(reverse("rag_prototype"))
     assert response.status_code == 200
     assert "service de composition RAG est indisponible" in response.content.decode()
+
+
+@override_settings(KALIOK_API_BASE_URL="http://api-test:9123")
+def test_django_composer_step_test_relays_to_existing_api(monkeypatch):
+    observed = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"status": "refused", "missing_inputs": [{"artifact_type_key": "discovered_candidates"}]}
+
+    def post(url, content, headers, timeout):
+        observed.update(url=url, content=content, headers=headers, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr(composer_ui.httpx, "post", post)
+    response = Client(HTTP_HOST="localhost").post(
+        reverse("rag_prototype_step_test"),
+        data='{"pipeline_revision_id":"00000000-0000-0000-0000-000000000001"}',
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "refused"
+    assert observed["url"] == "http://api-test:9123/rag/composer/execute-step"
+    assert observed["headers"] == {"Content-Type": "application/json"}
+
+
+@override_settings(KALIOK_API_BASE_URL="http://api-test:9123")
+def test_django_composer_step_test_reports_unavailable_api(monkeypatch):
+    monkeypatch.setattr(
+        composer_ui.httpx,
+        "post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ConnectError("indisponible")),
+    )
+    response = Client(HTTP_HOST="localhost").post(
+        reverse("rag_prototype_step_test"), data="{}", content_type="application/json"
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "failed",
+        "error": "Le service d’exécution est indisponible.",
+    }

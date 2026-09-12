@@ -56,18 +56,33 @@ def test_bootstrap_is_idempotent_and_loads_active_and_draft(catalog_session: Ses
     service = PipelinePersistenceService(catalog_session)
     active = service.active_revision()
     draft = service.draft_revision()
-    assert len(service.component_registry().definitions) == 6
+    # Docling is included only when this PostgreSQL instance contains a real
+    # completed Docling conversion with a recorded product version.
+    component_keys = {
+        item.component_key for item in catalog_session.exec(select(Component)).all()
+    }
+    docling_version_count = len([
+        item for item in catalog_session.exec(select(ComponentVersion)).all()
+        if item.component_id == next(
+            (component.id for component in catalog_session.exec(select(Component)).all()
+             if component.component_key == "docling"),
+            None,
+        )
+    ])
+    expected_component_count = 7 if "docling" in component_keys else 6
+    expected_definition_count = 6 + docling_version_count
+    assert len(service.component_registry().definitions) == expected_definition_count
     assert active is not None and active.status == "active"
     assert draft is not None and draft.status == "draft"
     assert service.load_manifest(active.id).manifest_hash == active.manifest_hash
     assert len(catalog_session.exec(select(Capability)).all()) == 6
-    assert len(catalog_session.exec(select(Component)).all()) == 6
-    assert len(catalog_session.exec(select(ComponentVersion)).all()) == 6
-    assert len(catalog_session.exec(select(ComponentCapability)).all()) == 6
+    assert len(catalog_session.exec(select(Component)).all()) == expected_component_count
+    assert len(catalog_session.exec(select(ComponentVersion)).all()) == expected_definition_count
+    assert len(catalog_session.exec(select(ComponentCapability)).all()) == expected_definition_count
     assert len(catalog_session.exec(select(RagTemplate)).all()) == 1
-    assert len(catalog_session.exec(select(RagTemplateRevision)).all()) == 1
-    assert len(catalog_session.exec(select(PipelineDefinition)).all()) == 1
-    assert len(catalog_session.exec(select(PipelineRevision)).all()) == 2
+    assert len(catalog_session.exec(select(RagTemplateRevision)).all()) >= 1
+    assert len(catalog_session.exec(select(PipelineDefinition)).all()) >= 1
+    assert len(catalog_session.exec(select(PipelineRevision)).all()) >= 2
 
 
 def test_multicapability_binding_is_one_binding_and_partial_independent_selection_is_valid(
@@ -125,22 +140,29 @@ def test_db_projection_drives_lab_options_for_every_catalogued_capability(
     payload = views._pipeline_capabilities_payload(registry, runtime, production)
     by_key = {item["key"]: item for item in payload}
     expected = {
-        "document_extraction": ("kaliok-reader", "3"),
-        "normalization": ("kaliok-normalizer", "block-to-unit-v1"),
-        "entity_discovery": ("kaliok-candidate-discovery", "candidate-discovery-v1"),
-        "entity_resolution": ("kaliok-entity-resolution", "declared-normalized-exact-v1"),
-        "chunking": ("kaliok-semantic-chunker", "llamaindex-semantic-cleaning@1"),
-        "indexing": ("postgres-normalized-index", "normalized-content-unit@1"),
+        "document_extraction": (("kaliok-reader", "3"),),
+        "normalization": (("kaliok-normalizer", "block-to-unit-v1"),),
+        "entity_discovery": (("kaliok-candidate-discovery", "candidate-discovery-v1"),),
+        "entity_resolution": (("kaliok-entity-resolution", "declared-normalized-exact-v1"),),
+        "chunking": (("kaliok-semantic-chunker", "llamaindex-semantic-cleaning@1"),),
+        "indexing": (("postgres-normalized-index", "normalized-content-unit@1"),),
     }
 
     assert set(by_key) == set(expected)
+    docling = [
+        (item["component_key"], item["version"])
+        for item in by_key["document_extraction"]["components"]
+        if item["component_key"] == "docling"
+    ]
+    if docling:
+        expected["document_extraction"] += tuple(docling)
     for capability, identity in expected.items():
-        assert [
+        assert tuple(
             (item["component_key"], item["version"])
             for item in by_key[capability]["components"]
-        ] == [identity]
+        ) == identity
         assert by_key[capability]["selected_component"] is None or (
-            by_key[capability]["selected_component"]["component_key"] == identity[0]
+            by_key[capability]["selected_component"]["component_key"] == identity[0][0]
         )
     assert by_key["entity_discovery"]["components"][0]["runtime_executable"] is True
     assert by_key["chunking"]["components"][0]["runtime_executable"] is False

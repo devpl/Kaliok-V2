@@ -15,10 +15,20 @@ from kaliok.storage.models import (
     Component,
     ComponentCapability,
     ComponentVersion,
+    Document,
+    DocumentVersion,
+    Execution,
+    ExecutionArtifact,
+    ExecutionArtifactContentBlock,
+    ExecutionArtifactDiscoveredCandidate,
+    ExecutionArtifactEntity,
+    ExecutionArtifactNormalizedContentUnit,
+    ExecutionStep,
     PipelineBinding,
     PipelineBindingNode,
     PipelineDefinition,
     PipelineRevision,
+    ProcessingRun,
     RagTemplate,
     RagTemplateEdge,
     RagTemplateNode,
@@ -146,6 +156,17 @@ class RagComposerReadService:
             )
 
         return {
+            "capabilities": [
+                self._catalog_capability(
+                    item, component_capabilities, versions, components, resources
+                )
+                for item in sorted(
+                    (item for item in capabilities.values() if item.is_active),
+                    key=lambda item: (item.display_order, item.display_name.lower()),
+                )
+            ],
+            "documents": self._documents(),
+            "lab_executions": self._lab_executions(artifact_types),
             "pipelines": [
                 self._pipeline(
                     definition,
@@ -351,6 +372,10 @@ class RagComposerReadService:
             issues.append("Le binding sélectionné est désactivé.")
 
         capability = capabilities.get(node.capability_id)
+        from kaliok.pipeline.step_testing import capability_execution_support
+        executable, unsupported_reason = capability_execution_support(
+            capability.capability_key if capability else ""
+        )
         capability_contracts = artifact_contracts.get(
             node.capability_id, {"input": [], "output": []}
         )
@@ -374,8 +399,102 @@ class RagComposerReadService:
             },
             "selected_binding": selected_binding,
             "alternatives": alternatives,
+            "lab_execution": {"executable": executable, "reason": unsupported_reason},
             "issues": issues,
         }
+
+    def _catalog_capability(self, item, component_capabilities, versions, components, resources):
+        tools = []
+        for link in component_capabilities:
+            if link.capability_id != item.id:
+                continue
+            version = versions.get(link.component_version_id)
+            component = components.get(version.component_id) if version else None
+            if version is None or component is None or not component.is_active:
+                continue
+            tools.append({
+                "component_version_id": str(version.id),
+                "component_key": component.component_key,
+                "display_name": component.display_name,
+                "version": version.version,
+                "status": version.status,
+                "configuration_schema": dict(link.configuration_schema or version.configuration_schema or {}),
+                "document_capabilities": list(
+                    (version.extra_data or {}).get("document_capabilities", [])
+                ),
+                "resources": [
+                    {"id": str(resource.id), "display_name": resource.display_name}
+                    for resource in resources.values()
+                    if resource.component_version_id == version.id
+                ],
+            })
+        return {
+            "id": str(item.id), "key": item.capability_key,
+            "display_name": item.display_name, "description": item.description,
+            "phase_key": item.phase_key, "tools": tools,
+        }
+
+    def _documents(self):
+        documents = {row.id: row for row in self.session.exec(select(Document)).all()}
+        versions = self.session.exec(select(DocumentVersion).order_by(
+            DocumentVersion.created_at.desc(), DocumentVersion.version_number.desc())).all()
+        return [
+            {"id": str(version.id), "document_id": str(version.document_id),
+             "title": documents.get(version.document_id).title if documents.get(version.document_id) else None,
+             "filename": version.filename, "version_number": version.version_number,
+             "processing_status": version.processing_status, "is_current": version.is_current}
+            for version in versions
+        ]
+
+    def _lab_executions(self, artifact_types):
+        executions = self.session.exec(select(Execution).where(
+            Execution.scope == "lab").order_by(Execution.created_at.desc()).limit(100)).all()
+        result = []
+        target_specs = {
+            "content_blocks": (ExecutionArtifactContentBlock, "content_block_id"),
+            "normalized_content_units": (ExecutionArtifactNormalizedContentUnit, "normalized_content_unit_id"),
+            "discovered_candidates": (ExecutionArtifactDiscoveredCandidate, "discovered_candidate_id"),
+            "entities": (ExecutionArtifactEntity, "entity_id"),
+        }
+        artifact_type_by_id = {row.id: row for row in artifact_types.values()}
+        for execution in executions:
+            step = self.session.exec(select(ExecutionStep).where(
+                ExecutionStep.execution_id == execution.id).order_by(ExecutionStep.sequence_no)).first()
+            if step is None:
+                continue
+            artefacts = self.session.exec(select(ExecutionArtifact).where(
+                ExecutionArtifact.execution_step_id == step.id).order_by(ExecutionArtifact.created_at)).all()
+            runs = self.session.exec(select(ProcessingRun).where(
+                ProcessingRun.execution_step_id == step.id).order_by(ProcessingRun.started_at)).all()
+            projected = []
+            for envelope in artefacts:
+                artifact_type = artifact_type_by_id.get(envelope.artifact_type_id)
+                spec = target_specs.get(artifact_type.artifact_type_key if artifact_type else "")
+                target = self.session.get(spec[0], envelope.id) if spec else None
+                if target:
+                    projected.append({"role": envelope.role,
+                                      "artifact_type_key": artifact_type.artifact_type_key,
+                                      "id": str(getattr(target, spec[1]))})
+            duration_ms = None
+            if execution.started_at and execution.completed_at:
+                duration_ms = max(0, round((execution.completed_at - execution.started_at).total_seconds() * 1000))
+            result.append({
+                "execution_id": str(execution.id), "execution_step_id": str(step.id),
+                "pipeline_revision_id": str(execution.pipeline_revision_id),
+                "rag_template_node_id": str(step.rag_template_node_id),
+                "document_version_id": (execution.extra_data or {}).get("document_version_id"),
+                "status": execution.status, "duration_ms": duration_ms,
+                "error": execution.error_message, "created_at": execution.created_at.isoformat(),
+                "processing_runs": [str(run.id) for run in runs],
+                "metrics": (dict(runs[-1].metrics or {}) if runs else {}) | {
+                    "input_count": len([item for item in projected if item["role"] == "input"])
+                        or (1 if (execution.extra_data or {}).get("capability") == "document_extraction" else 0),
+                    "output_count": len([item for item in projected if item["role"] == "output"]),
+                },
+                "input_artifacts": [item for item in projected if item["role"] == "input"],
+                "output_artifacts": [item for item in projected if item["role"] == "output"],
+            })
+        return result
 
     def _assignment(
         self,

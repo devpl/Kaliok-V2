@@ -12,7 +12,10 @@ from kaliok.api.dependencies import get_session
 from kaliok.api.main import app
 from kaliok.entity_resolution import EntityResolutionService
 from kaliok.execution import ExecutionProvenanceService
-from kaliok.pipeline.step_testing import RagComposerStepTestService, StepInput, StepTestRefused
+from kaliok.pipeline.step_testing import (
+    RagComposerStepTestService, StepInput, StepTestRefused,
+    capability_execution_support,
+)
 from kaliok.storage.database import create_database_engine
 from kaliok.storage.models import (
     ArtifactType, Capability, CapabilityArtifactContract, Component,
@@ -232,3 +235,23 @@ def test_execute_step_endpoint_returns_coherent_completed_result(step_test_sessi
     body = response.json()
     assert body["status"] == "completed" and body["inputs"] == [str(candidate.id)]
     assert body["outputs"] and body["processing_runs"]
+
+
+def test_lab_adapter_registry_exposes_only_the_safe_vertical_slice():
+    for key in ("document_extraction", "normalization", "entity_discovery", "entity_resolution"):
+        assert capability_execution_support(key) == (True, None)
+    for key in ("chunking", "indexing"):
+        executable, reason = capability_execution_support(key)
+        assert executable is False
+        assert reason and ("production" in reason or "current" in reason)
+
+
+def test_active_revision_is_read_only_and_creates_no_execution(step_test_session: Session):
+    service, pipeline, node, _, candidate = _refusal(step_test_session)
+    pipeline.status = "active"
+    step_test_session.flush()
+    before = step_test_session.exec(select(func.count()).select_from(Execution)).one()
+    with pytest.raises(StepTestRefused) as refused:
+        service.execute(pipeline_revision_id=pipeline.id, node_id=node.id, inputs=[_input(candidate)])
+    assert refused.value.kind == "production_read_only"
+    assert step_test_session.exec(select(func.count()).select_from(Execution)).one() == before

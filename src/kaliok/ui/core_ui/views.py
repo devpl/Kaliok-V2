@@ -376,12 +376,13 @@ def _pipeline_role_label(capability):
 
 def _pipeline_component_display_name(component_key, version):
     known = {
-        "kaliok-reader": "Kaliok Reader",
-        "kaliok-normalizer": "Kaliok Normalizer",
-        "kaliok-candidate-discovery": "Kaliok Candidate Discovery",
-        "kaliok-entity-resolution": "Kaliok Entity Resolution",
-        "kaliok-semantic-chunker": "Kaliok Semantic Chunker",
-        "postgres-normalized-index": "PostgreSQL Normalized Index",
+        "kaliok-reader": "Lecture documentaire Kaliok",
+        "kaliok-normalizer": "Normalisation Kaliok",
+        "kaliok-candidate-discovery": "Découverte d’entités Kaliok",
+        "kaliok-entity-resolution": "Résolution d’entités Kaliok",
+        "kaliok-semantic-chunker": "Découpage sémantique Kaliok",
+        "postgres-normalized-index": "Index PostgreSQL Kaliok",
+        "docling": "Docling",
     }
     label = known.get(component_key, component_key.replace("-", " ").title())
     return f"{label} {version}".strip()
@@ -495,6 +496,9 @@ def _pipeline_catalog_payload(session, registry, runtime_registry, selected_bind
             "runtime_executable": runtime_executable,
             "configuration_schema": version.configuration_schema or {},
             "metadata": version.extra_data or {},
+            "document_capabilities": (version.extra_data or {}).get(
+                "document_capabilities", []
+            ),
             "capabilities": capabilities,
             "provides": [item["key"] for item in capabilities]
             or (list(definition.provides) if definition else []),

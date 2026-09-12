@@ -41,6 +41,7 @@ from kaliok.storage.models import (
     RagTemplateDependency,
     RagTemplateNode,
     RagTemplateRevision,
+    ProcessingRun,
 )
 
 
@@ -94,13 +95,21 @@ CAPABILITY_CATALOG: tuple[dict[str, Any], ...] = (
 )
 
 COMPONENT_LABELS = {
-    "kaliok-reader": "Kaliok Reader",
-    "kaliok-normalizer": "Kaliok Normalizer",
-    "kaliok-candidate-discovery": "Kaliok Candidate Discovery",
-    "kaliok-entity-resolution": "Kaliok Entity Resolution",
-    "kaliok-semantic-chunker": "Kaliok Semantic Chunker",
-    "postgres-normalized-index": "PostgreSQL Normalized Index",
+    # These are real internal Kaliok services, not user-selectable wrapper names.
+    "kaliok-reader": "Lecture documentaire Kaliok",
+    "kaliok-normalizer": "Normalisation Kaliok",
+    "kaliok-candidate-discovery": "Découverte d’entités Kaliok",
+    "kaliok-entity-resolution": "Résolution d’entités Kaliok",
+    "kaliok-semantic-chunker": "Découpage sémantique Kaliok",
+    "postgres-normalized-index": "Index PostgreSQL Kaliok",
+    "docling": "Docling",
 }
+
+DOCLING_DESCRIPTION = (
+    "Moteur Docling observé dans les traitements documentaires Kaliok. "
+    "Les sorties conservées incluent la structure et les tables quand elles sont "
+    "fournies par le document converti."
+)
 
 EDGE_TYPES_KNOWN = frozenset(
     {"normal", "optional", "conditional", "fallback", "parallel", "merge", "loop"}
@@ -963,6 +972,12 @@ def bootstrap_catalog(session: Session) -> dict[str, Any]:
             session.add(component)
             session.flush()
             component_count += 1
+        # Keep the user-facing catalogue name aligned when an older bootstrap
+        # created the internal implementation name.
+        component.display_name = COMPONENT_LABELS.get(
+            definition.component_key, component.display_name
+        )
+        session.add(component)
         version = session.exec(
             select(ComponentVersion).where(
                 ComponentVersion.component_id == component.id,
@@ -1054,6 +1069,72 @@ def bootstrap_catalog(session: Session) -> dict[str, Any]:
                     target_capability_id=_catalog_capability(session, target).id,
                 )
             )
+
+    # Docling is a real optional document engine, but its product version comes
+    # from the conversion payload and is therefore not a static runtime constant.
+    # Only project versions that PostgreSQL has actually recorded; never invent a
+    # placeholder version merely to make it appear in the Composer.
+    docling_versions = sorted({
+        item
+        for item in session.exec(
+            select(ProcessingRun.engine_version).where(
+                ProcessingRun.engine == "docling",
+                ProcessingRun.status == "completed",
+                ProcessingRun.engine_version.is_not(None),
+            )
+        ).all()
+        if item
+    })
+    if docling_versions:
+        docling = session.exec(
+            select(Component).where(Component.component_key == "docling")
+        ).first()
+        if docling is None:
+            docling = Component(
+                component_key="docling",
+                display_name=COMPONENT_LABELS["docling"],
+                description=DOCLING_DESCRIPTION,
+            )
+            session.add(docling)
+            session.flush()
+            component_count += 1
+        else:
+            docling.display_name = COMPONENT_LABELS["docling"]
+            docling.description = DOCLING_DESCRIPTION
+            session.add(docling)
+        extraction = _catalog_capability(session, "document_extraction")
+        for version_value in docling_versions:
+            version = session.exec(
+                select(ComponentVersion).where(
+                    ComponentVersion.component_id == docling.id,
+                    ComponentVersion.version == version_value,
+                )
+            ).first()
+            if version is None:
+                version = ComponentVersion(
+                    component_id=docling.id,
+                    version=version_value,
+                    status="available",
+                    extra_data={
+                        "source": "processing_runs.engine_version",
+                        "document_capabilities": ["structure", "tables"],
+                    },
+                )
+                session.add(version)
+                session.flush()
+            link = session.exec(
+                select(ComponentCapability).where(
+                    ComponentCapability.component_version_id == version.id,
+                    ComponentCapability.capability_id == extraction.id,
+                )
+            ).first()
+            if link is None:
+                session.add(ComponentCapability(
+                    component_version_id=version.id,
+                    capability_id=extraction.id,
+                    invocation_mode="independent",
+                    extra_data={"used_capability": "Lecture du document"},
+                ))
     session.flush()
 
     service = PipelinePersistenceService(session)
